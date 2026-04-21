@@ -1,123 +1,114 @@
-import math
+from execute_util import text, link, image
+from facts import a100_flop_per_sec, h100_flop_per_sec
 import torch.nn.functional as F
 import timeit
-from typing import Iterable
 import torch
+from typing import Iterable
 from torch import nn
-from einops import rearrange, einsum, reduce
-
-from edtrace import text, image, link
+import numpy as np
 from lecture_util import article_link
-from gpu_util import cuda_if_available, get_max_memory_usage
-from facts import h100_flop_per_sec, h100_bytes_per_sec
-from references import deepseek_v3_2_2025, adagrad_2011, nemotron_3_super_2026
+from jaxtyping import Float
+from einops import rearrange, einsum, reduce
+from references import zero_2019
 
 
 def main():
-    text("Announcements:")
-    text("- Join the CS336 slack")
-    text("- Sign up on Modal with your **Stanford** email")
-    text("- Read the [AI policy guide](https://docs.google.com/document/d/1SZAlExB1qAc9izHt54gwunNpjKE6wXb8Y7yA_e-baK8/edit?tab=t.0)")
-    text("- Read the [cluster guide](https://docs.google.com/document/d/1cHE0iKVyXLJ3XpIs2XuXTmZ-HMmPk2hIPeCvy-AydMg/edit?tab=t.otis27tacaef)")
-    
-    text("Marin 1e23 FLOPs run finished and [matched forecasts](https://x.com/WilliamBarrHeld/status/2039373983632814318)!")
-    image("https://pbs.twimg.com/media/HE1P1HmaUAAjLXF?format=jpg&name=medium", width=800)
-
     text("Last lecture: overview, tokenization")
-    text("Today: resource accounting (systems)")
 
-    text("Recall: what's the best model one can train given fixed resources (compute, memory)?")
-    text("In other words: maximize (computational) **efficiency**.")
-    text("Prerequisite: understand the resources (compute, memory) for a given computation.")
+    text("Overview of this lecture:")
+    text("- We will discuss all the **primitives** needed to train a model.")
+    text("- We will go bottom-up from tensors to models to optimizers to the training loop.")
+    text("- We will pay close attention to efficiency (use of **resources**).")
+
+    text("In particular, we will account for two types of resources:")
+    text("- Memory (GB)")
+    text("- Compute (FLOPs)")
 
     motivating_questions()
 
-    text("What knowledge to take away from this lecture:")
-    text("- Mechanics: straightforward (PyTorch semantics)")
-    text("- Mindset: resource accounting (remember to do it)")
-    text("- Intuitions: get a sense of how resources are spent, no ML magic today")
+    text("We will not go over the Transformer.")
+    text("There are excellent expositions:")
+    link(title="Assignment 1 handout", url="https://github.com/stanford-cs336/assignment1-basics/blob/main/cs336_spring2025_assignment1_basics.pdf")
+    link(title="Mathematical description", url="https://johnthickstun.com/docs/transformers.pdf")
+    link(title="Illustrated Transformer", url="http://jalammar.github.io/illustrated-transformer/")
+    link(title="Illustrated GPT-2", url="https://jalammar.github.io/illustrated-gpt2/")
+    text("Instead, we'll work with simpler models.")
 
-    # Memory accounting
+    text("What knowledge to take away:")
+    text("- Mechanics: straightforward (just PyTorch)")
+    text("- Mindset: resource accounting (remember to do it)")
+    text("- Intuitions: broad strokes (no large models)")
+
+    text("## Memory accounting")
     tensors_basics()
     tensors_memory()
-    tensors_on_gpus()
 
-    # Compute accounting
+    text("## Compute accounting")
+    tensors_on_gpus()
+    tensor_operations()
     tensor_einops()
     tensor_operations_flops()
-
-    arithmetic_intensity()
-
-    # Memory and compute accounting for training
-    deep_network()
     gradients_basics()
     gradients_flops()
+
+    text("## Models")
+    module_parameters()
+    custom_model()
+
+    text("Training loop and best practices")
+    note_about_randomness()
+    data_loading()
+
     optimizer()
     train_loop()
-    
-    # More memory optimizations
-    gradient_accumulation()
-    activation_checkpointing()
-
-    text("Summary:")
-    text("- Everything is operations on tensors (parameters, gradients, activations, optimizer states, data)")
-    text("- einops: better way to think about tensor operations")
-    text("- 6 (# data points) (# parameters) FLOPs per training step")
-    text("- Arithmetic intensity / roofline analysis: compute-bound or memory-bound?")
-    text("- Matrix multiplications are compute-bound, elementwise operations are memory-bound")
-    text("- Gradient accumulation, activation checkpointing: reduce memory to use bigger batch sizes")
+    checkpointing()
+    mixed_precision_training()
 
 
 def motivating_questions():
+    text("Let's do some napkin math.")
+
     text("**Question**: How long would it take to train a 70B parameter model on 15T tokens on 1024 H100s?")
     total_flops = 6 * 70e9 * 15e12  # @inspect total_flops
-    h100_flop_per_sec = 1979e12 / 2
+    assert h100_flop_per_sec == 1979e12 / 2
     mfu = 0.5
     flops_per_day = h100_flop_per_sec * mfu * 1024 * 60 * 60 * 24  # @inspect flops_per_day
     days = total_flops / flops_per_day  # @inspect days
 
-    text("**Question**: What's the largest model that can you can train on 8 H100s using AdamW?")
+    text("**Question**: What's the largest model that can you can train on 8 H100s using AdamW (naively)?")
     h100_bytes = 80e9  # @inspect h100_bytes
-    bytes_per_parameter = 2 + 2 + (4 + 4)  # parameters (2), gradients (2), optimizer state (4 + 4) @inspect bytes_per_parameter
+    bytes_per_parameter = 4 + 4 + (4 + 4)  # parameters, gradients, optimizer state  @inspect bytes_per_parameter
     num_parameters = (h100_bytes * 8) / bytes_per_parameter  # @inspect num_parameters
-    text("Caveat: activations are not accounted for (depends on batch size and sequence length), so this is an upper bound.")
+    text("Caveat 1: we are naively using float32 for parameters and gradients.  We could also use bf16 for parameters and gradients (2 + 2) and keep an extra float32 copy of the parameters (4). This doesn't save memory, but is faster. "), link(zero_2019)
+    text("Caveat 2: activations are not accounted for (depends on batch size and sequence length).")
 
     text("This is a rough back-of-the-envelope calculation.")
-    text("But it gives you the flavor of napkin math one can quickly do to get a sense of resources.")
 
 
 def tensors_basics():
-    text("Tensors are the basic building block for storing everything:")
-    text("- data")
-    text("- parameters")
-    text("- gradients")
-    text("- optimizer state")
-    text("- activations")
+    text("Tensors are the basic building block for storing everything: parameters, gradients, optimizer state, data, activations.")
+    link(title="[PyTorch docs on tensors]", url="https://pytorch.org/docs/stable/tensors.html")
 
-    text("Example: parameters of the DeepSeek v3.2 model "), link(deepseek_v3_2_2025)
-    link(title="DeepSeek v3.2 model on Hugging Face", url="https://huggingface.co/deepseek-ai/DeepSeek-V3.2?show_file_info=model.safetensors.index.json")
+    text("You can create tensors in multiple ways:")
+    x = torch.tensor([[1., 2, 3], [4, 5, 6]])  # @inspect x
+    x = torch.zeros(4, 8)  # 4x8 matrix of all zeros @inspect x
+    x = torch.ones(4, 8)  # 4x8 matrix of all ones @inspect x
+    x = torch.randn(4, 8)  # 4x8 matrix of iid Normal(0, 1) samples @inspect x
 
-    text("Each tensor has a rank, which is the number of dimensions.")
-    x = torch.zeros(4)        # rank 1 tensor (vector) @inspect x
-    x = torch.zeros(4, 8)     # rank 2 tensor (matrix) @inspect x
-    x = torch.zeros(4, 8, 2)  # rank 3 tensor @inspect x
-
-    text("In Transformers, will see tensors of rank 4:")
-    B = 32   # Batch size
-    S = 16   # Sequence length
-    H = 16   # Number of heads
-    D = 64   # Hidden dimension per head
-    x = torch.zeros(B, S, H, D)
+    text("Allocate but don't initialize the values:")
+    x = torch.empty(4, 8)  # 4x8 matrix of uninitialized values @inspect x
+    text("...because you want to use some custom logic to set the values later")
+    nn.init.trunc_normal_(x, mean=0, std=1, a=-2, b=2)  # @inspect x
 
 
 def tensors_memory():
-    text("Elements of tensors are generally floating point numbers.")
+    text("Almost everything (parameters, gradients, activations, optimizer states) are stored as floating point numbers.")
 
-    text("## fp32")
-    link(title="Wikipedia", url="https://en.wikipedia.org/wiki/Single-precision_floating-point_format")
-    image("images/fp32.png", width=700)
-    text("The fp32 data type (also known as float32 or single precision) is the default.")
-    text("Traditionally, in scientific computing, fp32 is the baseline; you could use double precision (fp64) in some cases.")
+    text("## float32")
+    link(title="[Wikipedia]", url="https://en.wikipedia.org/wiki/Single-precision_floating-point_format")
+    image("images/fp32.png", width=600)
+    text("The float32 data type (also known as fp32 or single precision) is the default.")
+    text("Traditionally, in scientific computing, float32 is the baseline; you could use double precision (float64) in some cases.")
     text("In deep learning, you can be a lot sloppier.")
 
     text("Let's examine memory usage of these tensors.")
@@ -129,12 +120,13 @@ def tensors_memory():
     assert get_memory_usage(x) == 4 * 8 * 4  # 128 bytes
 
     text("One matrix in the feedforward layer of GPT-3:")
-    assert get_memory_usage(torch.empty(12288 * 4, 12288)) == 2304 * 1024 * 1024  # 2.3 GB @stepover
+    assert get_memory_usage(torch.empty(12288 * 4, 12288)) == 2304 * 1024 * 1024  # 2.3 GB
+    text("...which is a lot!")
 
-    text("## fp16")
-    link(title="Wikipedia", url="https://en.wikipedia.org/wiki/Half-precision_floating-point_format")
+    text("## float16")
+    link(title="[Wikipedia]", url="https://en.wikipedia.org/wiki/Half-precision_floating-point_format")
     image("images/fp16.png", width=400)
-    text("The fp16 data type (also known as float16 or half precision) cuts down the memory.")
+    text("The float16 data type (also known as fp16 or half precision) cuts down the memory.")
     x = torch.zeros(4, 8, dtype=torch.float16)  # @inspect x
     assert x.element_size() == 2
     text("However, the dynamic range (especially for small numbers) isn't great.")
@@ -142,43 +134,31 @@ def tensors_memory():
     assert x == 0  # Underflow!
     text("If this happens when you train, you can get instability.")
 
-    text("## bf16")
-    link(title="Wikipedia", url="https://en.wikipedia.org/wiki/Bfloat16_floating-point_format")
+    text("## bfloat16")
+    link(title="[Wikipedia]", url="https://en.wikipedia.org/wiki/Bfloat16_floating-point_format")
     image("images/bf16.png", width=400)
-    text("Google Brain developed brain floating point (bf16) in 2018 to address this issue.")
-    text("bf16 uses the same memory as fp16 but has the same dynamic range as fp32!")
+    text("Google Brain developed bfloat (brain floating point) in 2018 to address this issue.")
+    text("bfloat16 uses the same memory as float16 but has the same dynamic range as float32!")
     text("The only catch is that the resolution is worse, but this matters less for deep learning.")
     x = torch.tensor([1e-8], dtype=torch.bfloat16)  # @inspect x
     assert x != 0  # No underflow!
 
-    text("## Mixed precision")
-    text("Implications on training:")
-    text("- Training with fp32 works, but requires lots of memory.")
-    text("- Training with fp16 and even bf16 is risky, and you can get instability.")
-
-    text("Solution: mixed precision training "), link("https://arxiv.org/pdf/1710.03740.pdf")
-    text("- Use bf16 for parameters, activations, and gradients")
-    text("- Use fp32 for optimizer states")
-
-    text("Pytorch has an automatic mixed precision (AMP) library. "), link(title="docs", url="https://pytorch.org/docs/stable/amp.html")
-    text("Tries to cast things into bf16 when safe (matmuls, not exp).")
-    with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-        x = torch.zeros(4, 8)  # @inspect x
+    text("Let's compare the dynamic ranges and memory usage of the different data types:")
+    float32_info = torch.finfo(torch.float32)  # @inspect float32_info
+    float16_info = torch.finfo(torch.float16)  # @inspect float16_info
+    bfloat16_info = torch.finfo(torch.bfloat16)  # @inspect bfloat16_info
 
     text("## fp8")
-    text("In 2022, fp8 was standardized, motivated by machine learning workloads [primer](https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/examples/fp8_primer.html).")
-    image("https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/_images/fp8_formats.png", width=600)
+    text("In 2022, FP8 was standardized, motivated by machine learning workloads.")
+    link("https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/examples/fp8_primer.html")
+    image("https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/_images/fp8_formats.png", width=400)
     text("H100s support two variants of FP8: E4M3 (range [-448, 448]) and E5M2 ([-57344, 57344]).")
     text("Reference: "), link("https://arxiv.org/pdf/2209.05433.pdf")
 
-    text("## fp4")
-    text("In 2025, NVIDIA developed [nvfp4](https://developer.nvidia.com/blog/introducing-nvfp4-for-efficient-and-accurate-low-precision-inference/)")
-    text("Only 4 bits per value!")
-    text("Values: -6, -4, -3, -2, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2, 3, 4, 6")
-    text("Use a separate scale factor per block, so actually get more dynamic range (but just can't vary freely from neighbors).")
-    text("Nemotron 3 Super was trained in NVFP4 "), link(nemotron_3_super_2026)
-
-    text("Some of this is done in NVIDIA libraries outside of user control.")
+    text("Implications on training:")
+    text("- Training with float32 works, but requires lots of memory.")
+    text("- Training with fp8, float16 and even bfloat16 is risky, and you can get instability.")
+    text("- Solution (later): use mixed precision training, see "), link(mixed_precision_training)
 
 
 def tensors_on_gpus():
@@ -186,17 +166,150 @@ def tensors_on_gpus():
     x = torch.zeros(32, 32)
     assert x.device == torch.device("cpu")
 
-    text("However, what about GPUs?")
-    image("images/cpu-gpu.png", width=600)
-    device = cuda_if_available()  # @inspect device
+    text("However, in order to take advantage of the massive parallelism of GPUs, we need to move them to GPU memory.")
+    image("images/cpu-gpu.png", width=400)
 
-    text("In order to take advantage of the massive parallelism of GPUs, we need to move them to GPU memory.")
-    x = x.to(device)
+    text("Let's first see if we have any GPUs.")
+    if not torch.cuda.is_available():
+        return
 
-    text("Or create the tensor directly on the GPU:")
-    with torch.device(device):
-        x = torch.zeros(32, 32)
-        assert x.device == device
+    num_gpus = torch.cuda.device_count()  # @inspect num_gpus
+    for i in range(num_gpus):
+        properties = torch.cuda.get_device_properties(i)  # @inspect properties
+
+    memory_allocated = torch.cuda.memory_allocated()  # @inspect memory_allocated
+
+    text("Move the tensor to GPU memory (device 0).")
+    y = x.to("cuda:0")
+    assert y.device == torch.device("cuda", 0)
+
+    text("Or create a tensor directly on the GPU:")
+    z = torch.zeros(32, 32, device="cuda:0")
+
+    new_memory_allocated = torch.cuda.memory_allocated()  # @inspect new_memory_allocated
+    memory_used = new_memory_allocated - memory_allocated  # @inspect memory_used
+    assert memory_used == 2 * (32 * 32 * 4)  # 2 32x32 matrices of 4-byte floats
+
+
+
+def tensor_operations():
+    text("Most tensors are created from performing operations on other tensors.")
+    text("Each operation has some memory and compute consequence.")
+
+    tensor_storage()
+    tensor_slicing()
+    tensor_elementwise()
+    tensor_matmul()
+
+
+def tensor_storage():
+    text("What are tensors in PyTorch?")
+    text("PyTorch tensors are pointers into allocated memory")
+    text("...with metadata describing how to get to any element of the tensor.")
+    image("https://martinlwx.github.io/img/2D_tensor_strides.png", width=400)
+    link(title="[PyTorch docs]", url="https://pytorch.org/docs/stable/generated/torch.Tensor.stride.html")
+    x = torch.tensor([
+        [0., 1, 2, 3],
+        [4, 5, 6, 7],
+        [8, 9, 10, 11],
+        [12, 13, 14, 15],
+    ])
+
+    text("To go to the next row (dim 0), skip 4 elements in storage.")
+    assert x.stride(0) == 4
+
+    text("To go to the next column (dim 1), skip 1 element in storage.")
+    assert x.stride(1) == 1
+
+    text("To find an element:")
+    r, c = 1, 2
+    index = r * x.stride(0) + c * x.stride(1)  # @inspect index
+    assert index == 6
+
+
+def tensor_slicing():
+    x = torch.tensor([[1., 2, 3], [4, 5, 6]])  # @inspect x
+
+    text("Many operations simply provide a different **view** of the tensor.")
+    text("This does not make a copy, and therefore mutations in one tensor affects the other.")
+
+    text("Get row 0:")
+    y = x[0]  # @inspect y
+    assert torch.equal(y, torch.tensor([1., 2, 3]))
+    assert same_storage(x, y)
+
+    text("Get column 1:")
+    y = x[:, 1]  # @inspect y
+    assert torch.equal(y, torch.tensor([2, 5]))
+    assert same_storage(x, y)
+
+    text("View 2x3 matrix as 3x2 matrix:")
+    y = x.view(3, 2)  # @inspect y
+    assert torch.equal(y, torch.tensor([[1, 2], [3, 4], [5, 6]]))
+    assert same_storage(x, y)
+
+    text("Transpose the matrix:")
+    y = x.transpose(1, 0)  # @inspect y
+    assert torch.equal(y, torch.tensor([[1, 4], [2, 5], [3, 6]]))
+    assert same_storage(x, y)
+
+    text("Check that mutating x also mutates y.")
+    x[0][0] = 100  # @inspect x, @inspect y
+    assert y[0][0] == 100
+
+    text("Note that some views are non-contiguous entries, which means that further views aren't possible.")
+    x = torch.tensor([[1., 2, 3], [4, 5, 6]])  # @inspect x
+    y = x.transpose(1, 0)  # @inspect y
+    assert not y.is_contiguous()
+    try:
+        y.view(2, 3)
+        assert False
+    except RuntimeError as e:
+        assert "view size is not compatible with input tensor's size and stride" in str(e)
+
+    text("One can enforce a tensor to be contiguous first:")
+    y = x.transpose(1, 0).contiguous().view(2, 3)  # @inspect y
+    assert not same_storage(x, y)
+    text("Views are free, copying take both (additional) memory and compute.")
+
+
+def tensor_elementwise():
+    text("These operations apply some operation to each element of the tensor")
+    text("...and return a (new) tensor of the same shape.")
+
+    x = torch.tensor([1, 4, 9])
+    assert torch.equal(x.pow(2), torch.tensor([1, 16, 81]))
+    assert torch.equal(x.sqrt(), torch.tensor([1, 2, 3]))
+    assert torch.equal(x.rsqrt(), torch.tensor([1, 1 / 2, 1 / 3]))  # i -> 1/sqrt(x_i)
+
+    assert torch.equal(x + x, torch.tensor([2, 8, 18]))
+    assert torch.equal(x * 2, torch.tensor([2, 8, 18]))
+    assert torch.equal(x / 0.5, torch.tensor([2, 8, 18]))
+
+    text("`triu` takes the upper triangular part of a matrix.")
+    x = torch.ones(3, 3).triu()  # @inspect x
+    assert torch.equal(x, torch.tensor([
+        [1, 1, 1],
+        [0, 1, 1],
+        [0, 0, 1]],
+    ))
+    text("This is useful for computing an causal attention mask, where M[i, j] is the contribution of i to j.")
+
+
+def tensor_matmul():
+    text("Finally, the bread and butter of deep learning: matrix multiplication.")
+    x = torch.ones(16, 32)
+    w = torch.ones(32, 2)
+    y = x @ w
+    assert y.size() == torch.Size([16, 2])
+
+    text("In general, we perform operations for every example in a batch and token in a sequence.")
+    image("images/batch-sequence.png", width=400)
+    x = torch.ones(4, 8, 16, 32)
+    w = torch.ones(32, 2)
+    y = x @ w
+    assert y.size() == torch.Size([4, 8, 16, 2])
+    text("In this case, we iterate over values of the first 2 dimensions of `x` and multiply by `w`.")
 
 
 def tensor_einops():
@@ -204,8 +317,9 @@ def tensor_einops():
 
     text("Einops is a library for manipulating tensors where dimensions are named.")
     text("It is inspired by Einstein summation notation (Einstein, 1916).")
-    link(title="Einops tutorial", url="https://einops.rocks/1-einops-basics/")
+    link(title="[Einops tutorial]", url="https://einops.rocks/1-einops-basics/")
 
+    jaxtyping_basics()
     einops_einsum()
     einops_reduce()
     einops_rearrange()
@@ -213,48 +327,49 @@ def tensor_einops():
 
 def einops_motivation():
     text("Traditional PyTorch code:")
-    x = torch.ones(2, 2, 3)      # batch seq hidden  @inspect x
-    y = torch.ones(2, 2, 3)      # batch seq hidden  @inspect y
-    z = x @ y.transpose(-2, -1)  # batch seq seq  @inspect z
+    x = torch.ones(2, 2, 3)  # batch, sequence, hidden  @inspect x
+    y = torch.ones(2, 2, 3)  # batch, sequence, hidden  @inspect y
+    z = x @ y.transpose(-2, -1)  # batch, sequence, sequence  @inspect z
     text("Easy to mess up the dimensions (what is -2, -1?)...")
+
+
+def jaxtyping_basics():
+    text("How do you keep track of tensor dimensions?")
+
+    text("Old way:")
+    x = torch.ones(2, 2, 1, 3)  # batch seq heads hidden  @inspect x
+
+    text("New (jaxtyping) way:")
+    x: Float[torch.Tensor, "batch seq heads hidden"] = torch.ones(2, 2, 1, 3)  # @inspect x
+    text("Note: this is just documentation (no enforcement).")
 
 
 def einops_einsum():
     text("Einsum is generalized matrix multiplication with good bookkeeping.")
 
-    x = torch.ones(3, 4)  # seq1 hidden @inspect x
-    y = torch.ones(4, 3)  # hidden seq2 @inspect y
+    text("Define two tensors:")
+    x: Float[torch.Tensor, "batch seq1 hidden"] = torch.ones(2, 3, 4)  # @inspect x
+    y: Float[torch.Tensor, "batch seq2 hidden"] = torch.ones(2, 3, 4)  # @inspect y
 
-    # Old way
-    z = x @ y   # seq1 seq2 @inspect z
+    text("Old way:")
+    z = x @ y.transpose(-2, -1)  # batch, sequence, sequence  @inspect z
 
-    # New (einops) way
-    z = einsum(x, y, "seq1 hidden, hidden seq2 -> seq1 seq2")  # @inspect z
-
-    text("Let's try a more complex example...")  # @clear x y z
-
-    x = torch.ones(2, 3, 4)  # batch seq1 hidden @inspect x
-    y = torch.ones(2, 3, 4)  # batch seq2 hidden @inspect y
-
-    # Old way
-    z = x @ y.transpose(-2, -1)  # batch seq1 seq2  @inspect z
-
-    # New (einops) way
+    text("New (einops) way:")
     z = einsum(x, y, "batch seq1 hidden, batch seq2 hidden -> batch seq1 seq2")  # @inspect z
     text("Dimensions that are not named in the output are summed over.")
 
-    # Or can use `...` to represent broadcasting over any number of dimensions
+    text("Or can use `...` to represent broadcasting over any number of dimensions:")
     z = einsum(x, y, "... seq1 hidden, ... seq2 hidden -> ... seq1 seq2")  # @inspect z
 
 
 def einops_reduce():
     text("You can reduce a single tensor via some operation (e.g., sum, mean, max, min).")
-    x = torch.ones(2, 3, 4)  # batch seq hidden @inspect x
+    x: Float[torch.Tensor, "batch seq hidden"] = torch.ones(2, 3, 4)  # @inspect x
 
-    # Old way
+    text("Old way:")
     y = x.sum(dim=-1)  # @inspect y
 
-    # New (einops) way
+    text("New (einops) way:")
     y = reduce(x, "... hidden -> ...", "sum")  # @inspect y
 
 
@@ -262,17 +377,17 @@ def einops_rearrange():
     text("Sometimes, a dimension represents two dimensions")
     text("...and you want to operate on one of them.")
 
-    x = torch.ones(3, 8)  # seq total_hidden @inspect x
+    x: Float[torch.Tensor, "batch seq total_hidden"] = torch.ones(2, 3, 8)  # @inspect x
     text("...where `total_hidden` is a flattened representation of `heads * hidden1`")
-    w = torch.ones(4, 4)  # hidden1 hidden2 @inspect w
+    w: Float[torch.Tensor, "hidden1 hidden2"] = torch.ones(4, 4)
 
-    # Break up `total_hidden` into two dimensions (`heads` and `hidden1`
+    text("Break up `total_hidden` into two dimensions (`heads` and `hidden1`):")
     x = rearrange(x, "... (heads hidden1) -> ... heads hidden1", heads=2)  # @inspect x
 
-    # Perform the transformation by `w`
+    text("Perform the transformation by `w`:")
     x = einsum(x, w, "... hidden1, hidden1 hidden2 -> ... hidden2")  # @inspect x
 
-    # Combine `heads` and `hidden2` back together
+    text("Combine `heads` and `hidden2` back together:")
     x = rearrange(x, "... heads hidden2 -> ... (heads hidden2)")  # @inspect x
 
 
@@ -287,202 +402,86 @@ def tensor_operations_flops():
 
     text("## Intuitions")
     text("Training GPT-3 (2020) took 3.14e23 FLOPs. "), article_link("https://lambdalabs.com/blog/demystifying-gpt-3")
-    text("Training GPT-4 (2023) is speculated to take 2e25 FLOPs. "), article_link("https://patmcguinness.substack.com/p/gpt-4-details-revealed")
+    text("Training GPT-4 (2023) is speculated to take 2e25 FLOPs "), article_link("https://patmcguinness.substack.com/p/gpt-4-details-revealed")
+    text("US executive order: any foundation model trained with >= 1e26 FLOPs must be reported to the government (revoked in 2025)")
 
-    text("H100 has a peak performance of 1979 teraFLOP/s with sparsity, 50% without "), link(title="spec", url="https://resources.nvidia.com/en-us-tensor-core/nvidia-tensor-core-gpu-datasheet")
-    h100_flop_per_sec = 1979e12 / 2
+    text("A100 has a peak performance of 312 teraFLOP/s "), link(title="[spec]", url="https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-us-nvidia-1758950-r4-web.pdf")
+    assert a100_flop_per_sec == 312e12
+
+    text("H100 has a peak performance of 1979 teraFLOP/s with sparsity, 50% without "), link(title="[spec]", url="https://resources.nvidia.com/en-us-tensor-core/nvidia-tensor-core-gpu-datasheet")
+    assert h100_flop_per_sec == 1979e12 / 2
 
     text("8 H100s for 2 weeks:")
-    total_flops = 8 * 2 * (60 * 60 * 24 * 7) * h100_flop_per_sec  # @inspect total_flops
+    total_flops = 8 * (60 * 60 * 24 * 7) * h100_flop_per_sec  # @inspect total_flops
 
     text("## Linear model")
+    text("As motivation, suppose you have a linear model.")
+    text("- We have n points")
+    text("- Each point is d-dimsional")
+    text("- The linear model maps each d-dimensional vector to a k outputs")
+
     if torch.cuda.is_available():
         B = 16384  # Number of points
-        D = 32768  # Dimension of each point
+        D = 32768  # Dimension
         K = 8192   # Number of outputs
     else:
         B = 1024
         D = 256
         K = 64
 
-    x = torch.ones(B, D, device=cuda_if_available())
-    w = torch.randn(D, K, device=cuda_if_available())
+    device = get_device()
+    x = torch.ones(B, D, device=device)
+    w = torch.randn(D, K, device=device)
     y = x @ w
-
-    text("How many FLOPs is this matmul?")
     text("We have one multiplication (x[i][j] * w[j][k]) and one addition per (i, j, k) triple.")
     actual_num_flops = 2 * B * D * K  # @inspect actual_num_flops
 
-    text("We can also time this operation to see how long it takes.")
-    actual_time = benchmark(lambda: x @ w)  # @inspect actual_time
+    text("## FLOPs of other operations")
+    text("- Elementwise operation on a m x n matrix requires O(m n) FLOPs.")
+    text("- Addition of two m x n matrices requires m n FLOPs.")
+    text("In general, no other operation that you'd encounter in deep learning is as expensive as matrix multiplication for large enough matrices.")
 
-    text("The actual FLOP/s of this operation:") 
+    text("Interpretation:")
+    text("- B is the number of data points")
+    text("- (D K) is the number of parameters")
+    text("- FLOPs for forward pass is 2 (# tokens) (# parameters)")
+    text("It turns out this generalizes to Transformers (to a first-order approximation).")
+
+    text("How do our FLOPs calculations translate to wall-clock time (seconds)?")
+    text("Let us time it!")
+    actual_time = time_matmul(x, w)  # @inspect actual_time
     actual_flop_per_sec = actual_num_flops / actual_time  # @inspect actual_flop_per_sec
 
-    text("Each GPU has a specification sheet that provides the peak performance.")
-    text("- Example: "), link(title="H100 spec", url="https://resources.nvidia.com/en-us-gpu-resources/h100-datasheet-24306")
+    text("Each GPU has a specification sheet that reports the peak performance.")
+    text("- A100 "), link(title="[spec]", url="https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-us-nvidia-1758950-r4-web.pdf")
+    text("- H100 "), link(title="[spec]", url="https://resources.nvidia.com/en-us-tensor-core/nvidia-tensor-core-gpu-datasheet")
     text("Note that the FLOP/s depends heavily on the data type!")
-    promised_flop_per_sec = get_promised_flop_per_sec(x.dtype)  # @inspect promised_flop_per_sec
+    promised_flop_per_sec = get_promised_flop_per_sec(device, x.dtype)  # @inspect promised_flop_per_sec
 
     text("## Model FLOPs utilization (MFU)")
 
-    text("Definition: MFU = (actual FLOP/s) / (promised FLOP/s) [ignore communication/overhead]")
-    mfu = actual_flop_per_sec / promised_flop_per_sec if promised_flop_per_sec else None  # @inspect mfu
+    text("Definition: (actual FLOP/s) / (promised FLOP/s) [ignore communication/overhead]")
+    mfu = actual_flop_per_sec / promised_flop_per_sec  # @inspect mfu
+    text("Usually, MFU of >= 0.5 is quite good (and will be higher if matmuls dominate)")
 
-    text("Usually, MFU of ≥ 0.5 is quite good!")
+    text("Let's do it with bfloat16:")
+    x = x.to(torch.bfloat16)
+    w = w.to(torch.bfloat16)
+    bf16_actual_time = time_matmul(x, w)  # @inspect bf16_actual_time
+    bf16_actual_flop_per_sec = actual_num_flops / bf16_actual_time  # @inspect bf16_actual_flop_per_sec
+    bf16_promised_flop_per_sec = get_promised_flop_per_sec(device, x.dtype)  # @inspect bf16_promised_flop_per_sec
+    bf16_mfu = bf16_actual_flop_per_sec / bf16_promised_flop_per_sec  # @inspect bf16_mfu
+    text("Note: comparing bfloat16 to float32, the actual FLOP/s is higher.")
+    text("The MFU here is rather low, probably because the promised FLOPs is a bit optimistic.")
 
-    text("But why is MFU not closer to 1?")
-    text("To answer this question, we need to look more closely at how computations are done on GPUs...")
-
-
-def arithmetic_intensity():
-    image("images/compute-memory.png", width=300)
-    text("How to compute a thing:")
-    text("1. Send inputs from memory to accelerator")
-    text("2. Perform computation")
-    text("3. Send outputs from accelerator to memory")
-
-    text("How long does this take?")
-
-    text("Depends on two things:")
-    text("1. Accelerator speed (FLOP/s)")
-    text("2. Memory bandwidth (bytes/s)")
-    assert h100_flop_per_sec == 1979e12 / 2  # Half without sparsity
-    assert h100_bytes_per_sec == 3.35e12
-
-    arithmetic_intensity_relu()
-    arithmetic_intensity_gelu()
-    arithmetic_intensity_dot_product()
-    arithmetic_intensity_matrix_vector_product()
-    arithmetic_intensity_matmul()
-
-    # Let's visualize it
-    roofline_plots()
-
-
-def arithmetic_intensity_relu():
-    n = 1024 * 1024
-    x = torch.ones(n, dtype=torch.bfloat16, device=cuda_if_available())
-    y = torch.relu(x)
-
-    bytes = (2 * n) + (2 * n)  # Read x, write y (bf16 is 2 bytes/float)
-    flops = n  # n comparisons
-
-    communication_time = bytes / h100_bytes_per_sec  # @inspect communication_time
-    computation_time = flops / h100_flop_per_sec  # @inspect computation_time
-
-    text("Assume we can overlap communication and computation perfectly.")
-    total_time = max(communication_time, computation_time)  # @inspect total_time
-
-    text("What is the bottleneck?")
-    text("- Memory-bound: communication time > computation time")
-    text("- Compute-bound: computation time > communication time")
-
-    text("In this case, ReLU is memory-bound.")
-
-    text("Alternative way to see this:")
-    text("Accelerator intensity: how much work can the accelerator do per byte transferred?")
-    h100_accelerator_intensity = h100_flop_per_sec / h100_bytes_per_sec  # @inspect h100_accelerator_intensity
-
-    text("Arithmetic intensity: how much actual work per byte for this workload?")
-    arithmetic_intensity = flops / bytes  # ~1/4 @inspect arithmetic_intensity
-
-    text("What is the bottleneck?")
-    text("- Memory-bound: arithmetic intensity < accelerator intensity")
-    text("- Compute-bound: arithmetic intensity > accelerator intensity")
-
-    assert arithmetic_intensity < h100_accelerator_intensity
-
-    text("In general, we'll find ourselves memory bound.")
-    text("Can we increase arithmetic intensity?")
-
-
-def arithmetic_intensity_gelu():
-    n = 1024 * 1024
-    x = torch.ones(n, dtype=torch.bfloat16, device=cuda_if_available())
-    y = F.gelu(x)  # GELU(x) = 0.5 x (1 + tanh(sqrt(2/pi) (x + 0.044715 x^3)))
-
-    bytes = (2 * n) + (2 * n)  # Read x, write y (bf16 is 2 bytes/float)
-    flops = 20 * n  # tanh can be approximated in various ways (e.g., polynomials)
-
-    arithmetic_intensity = flops / bytes  # @inspect arithmetic_intensity
-
-    h100_accelerator_intensity = h100_flop_per_sec / h100_bytes_per_sec  # @inspect h100_accelerator_intensity
-    assert arithmetic_intensity < h100_accelerator_intensity
-
-    text("Note that GeLU does more work than ReLU per byte moved, so it has higher arithmetic intensity.")
-    text("But still memory-bound!")
-    text("In other words, ReLU is not faster than GeLU (when doing things in an isolated way).")
-
-
-def arithmetic_intensity_dot_product():
-    n = 1024 * 1024
-    x = torch.ones(n, dtype=torch.bfloat16, device=cuda_if_available())
-    w = torch.ones(n, dtype=torch.bfloat16, device=cuda_if_available())
-    y = x @ w
-
-    bytes = (2 * n) + (2 * n) + 2  # Read x, read w, write y
-    flops = 2 * n - 1  # n multiplications, n-1 additions
-
-    arithmetic_intensity = flops / bytes  # ~1/2 @inspect arithmetic_intensity
-
-    h100_accelerator_intensity = h100_flop_per_sec / h100_bytes_per_sec  # @inspect h100_accelerator_intensity
-    assert arithmetic_intensity < h100_accelerator_intensity
-    text("Memory-bound!")
-
-
-def arithmetic_intensity_matrix_vector_product():
-    n = 1024
-    x = torch.ones(n, dtype=torch.bfloat16, device=cuda_if_available())
-    w = torch.ones(n, n, dtype=torch.bfloat16, device=cuda_if_available())
-    y = x @ w
-
-    bytes = (2 * n) + (2 * n * n) + (2 * n)  # Read x, read w, write y
-    flops = n * (2 * n - 1)  # n dot-products
-
-    arithmetic_intensity = flops / bytes  # ~1 @inspect arithmetic_intensity
-
-    h100_accelerator_intensity = h100_flop_per_sec / h100_bytes_per_sec  # @inspect h100_accelerator_intensity
-    assert arithmetic_intensity < h100_accelerator_intensity
-    text("Memory-bound!")
-
-def arithmetic_intensity_matmul():
-    n = 1024
-    x = torch.ones(n, n, dtype=torch.bfloat16, device=cuda_if_available())
-    w = torch.ones(n, n, dtype=torch.bfloat16, device=cuda_if_available())
-    y = x @ w
-
-    bytes = (2 * n * n) + (2 * n * n) + (2 * n * n)  # Read x, read w, write y
-    flops = n * n * (2 * n - 1)  # n^2 dot products
-
-    arithmetic_intensity = flops / bytes  # ~n/3 @inspect arithmetic_intensity
-
-    h100_accelerator_intensity = h100_flop_per_sec / h100_bytes_per_sec  # @inspect h100_accelerator_intensity
-    assert arithmetic_intensity > h100_accelerator_intensity
-    text("Finally, compute-bound!")
-
-    text("As long as we have large matrices, we're compute-bound (saturating the accelerator).")
-    text("Training Transformers involves big matrix multiplications.")
-    text("Matrix-vector product is what happens during inference, which is why inference is memory-bound.")
-
-    text("Note: arithmetic/accelerator intensity also depends on the precision (bf16 versus fp32).")
-
-
-def roofline_plots():
-    text("We can visualize the relationship between arithmetic intensity and performance using roofline plots.")
-    image("https://jax-ml.github.io/scaling-book/assets/img/roofline-improved-1400.webp", width=600)
-    text("- Each slice on the x-axis is a particular computation (with some arithmetic intensity)")
-    text("- Each piecewise linear function corresponds to a particular hardware")
-    text("- Kink is the accelerator intensity (transition from memory-bound to compute-bound)")
-
-    text("We can now relate this back to MFU:")
-    text("MFU = min(1, arithmetic-intensity / accelerator-intensity)")
-
-    link(title="reference", url="https://jax-ml.github.io/scaling-book/roofline/")
+    text("## Summary")
+    text("- Matrix multiplications dominate: (2 m n p) FLOPs")
+    text("- FLOP/s depends on hardware (H100 >> A100) and data type (bfloat16 >> float32)")
+    text("- Model FLOPs utilization (MFU): (actual FLOP/s) / (promised FLOP/s)")
 
 
 def gradients_basics():
-    text("So far, we've constructed tensors and passed them through operations (forward).")
+    text("So far, we've constructed tensors (which correspond to either parameters or data) and passed them through operations (forward).")
     text("Now, we're going to compute the gradient (backward).")
 
     text("As a simple example, let's consider the simple linear model:")
@@ -496,165 +495,260 @@ def gradients_basics():
 
     text("Backward pass: compute gradients")
     loss.backward()
-    assert torch.equal(w.grad, torch.tensor([1, 2, 3]))  # @inspect w.grad
+    assert loss.grad is None
+    assert pred_y.grad is None
+    assert x.grad is None
+    assert torch.equal(w.grad, torch.tensor([1, 2, 3]))
 
 
 def gradients_flops():
-    text("Let us count the FLOPs for computing gradients.")
+    text("Let us do count the FLOPs for computing gradients.")
 
-    image("images/deep-network.png", width=800)
+    text("Revisit our linear model")
+    if torch.cuda.is_available():
+        B = 16384  # Number of points
+        D = 32768  # Dimension
+        K = 8192   # Number of outputs
+    else:
+        B = 1024
+        D = 256
+        K = 64
 
-    B = 1024  # Number of points
-    D = 256   # Dimension
+    device = get_device()
+    x = torch.ones(B, D, device=device)
+    w1 = torch.randn(D, D, device=device, requires_grad=True)
+    w2 = torch.randn(D, K, device=device, requires_grad=True)
 
-    text("Define a simplified model (2-layer linear network):")
-    x = torch.ones(B, D, device=cuda_if_available())
-    w1 = torch.randn(D, D, device=cuda_if_available(), requires_grad=True)
-    w2 = torch.randn(D, D, device=cuda_if_available(), requires_grad=True)
+    text("Model: x --w1--> h1 --w2--> h2 -> loss")
+    h1 = x @ w1
+    h2 = h1 @ w2
+    loss = h2.pow(2).mean()
 
-    # Forward pass
-    h1 = einsum(x, w1, "batch in, in out -> batch out")  # x @ w1
-    h2 = einsum(h1, w2, "batch in, in out -> batch out")  # h1 @ w2
-    loss = (h2.mean() - 0)**2  # Regress everything to 0 (arbitrary)
+    text("Recall the number of forward FLOPs: "), link(tensor_operations_flops)
+    text("- Multiply x[i][j] * w1[j][k]")
+    text("- Add to h1[i][k]")
+    text("- Multiply h1[i][j] * w2[j][k]")
+    text("- Add to h2[i][k]")
+    num_forward_flops = (2 * B * D * D) + (2 * B * D * K)  # @inspect num_forward_flops
 
-    # Backward pass
+    text("How many FLOPs is running the backward pass?")
     h1.retain_grad()  # For debugging
     h2.retain_grad()  # For debugging
     loss.backward()
 
-    text("## Zoom in on one layer")
-    text("Let's focus on the second layer (h2 = h1 @ w2)")
+    text("Recall model: x --w1--> h1 --w2--> h2 -> loss")
 
-    text("**Forward pass**: Recall the number of forward FLOPs: ")
-    num_forward_flops = 2 * B * D * D   # @inspect num_forward_flops
-
-    text("**Backward pass**: How many FLOPs is running the backward pass?")
-
-    text("We need to compute:")
     text("- h1.grad = d loss / d h1")
+    text("- h2.grad = d loss / d h2")
+    text("- w1.grad = d loss / d w1")
     text("- w2.grad = d loss / d w2")
 
-    h1_grad = einsum(h2.grad, w2, "batch out, in out -> batch in")
-    assert torch.allclose(h1.grad, h1_grad)
+    text("Focus on the parameter w2.")
+    text("Invoke the chain rule.")
 
-    w2_grad = einsum(h2.grad, h1, "batch out, batch in -> in out")
-    assert torch.allclose(w2.grad, w2_grad)
+    num_backward_flops = 0  # @inspect num_backward_flops
 
-    num_backward_flops = (2 * B * D * D) + (2 * B * D * D)  # @inspect num_backward_flops
+    text("w2.grad[j,k] = sum_i h1[i,j] * h2.grad[i,k]")
+    assert w2.grad.size() == torch.Size([D, K])
+    assert h1.size() == torch.Size([B, D])
+    assert h2.grad.size() == torch.Size([B, K])
+    text("For each (i, j, k), multiply and add.")
+    num_backward_flops += 2 * B * D * K  # @inspect num_backward_flops
 
-    text("Note that the backward pass is 2x more expensive than the forward pass.")
+    text("h1.grad[i,j] = sum_k w2[j,k] * h2.grad[i,k]")
+    assert h1.grad.size() == torch.Size([B, D])
+    assert w2.size() == torch.Size([D, K])
+    assert h2.grad.size() == torch.Size([B, K])
+    text("For each (i, j, k), multiply and add.")
+    num_backward_flops += 2 * B * D * K  # @inspect num_backward_flops
 
-    text("## Consider all layers")
-    text("This was just for w2, need to apply it to all parameters in the network.")
+    text("This was for just w2 (D*K parameters).")
+    text("Can do it for w1 (D*D parameters) as well (though don't need x.grad).")
+    num_backward_flops += (2 + 2) * B * D * D  # @inspect num_backward_flops
 
-    text("Putting it together:")
+    text("A nice graphical visualization: "), article_link("https://medium.com/@dzmitrybahdanau/the-flops-calculus-of-language-model-training-3b19c1f025e4")
+    image("https://miro.medium.com/v2/resize:fit:1400/format:webp/1*VC9y_dHhCKFPXj90Qshj3w.gif", width=500)
+
+    text("Putting it togther:")
     text("- Forward pass: 2 (# data points) (# parameters) FLOPs")
     text("- Backward pass: 4 (# data points) (# parameters) FLOPs")
     text("- Total: 6 (# data points) (# parameters) FLOPs")
 
-    text("This is for multilayer perceptrons (MLPs)")
-    text("...but it turns out to be a good approximation for Transformers for short context lengths as well.")
+
+def module_parameters():
+    input_dim = 16384
+    output_dim = 32
+
+    text("Model parameters are stored in PyTorch as `nn.Parameter` objects.")
+    w = nn.Parameter(torch.randn(input_dim, output_dim))
+    assert isinstance(w, torch.Tensor)  # Behaves like a tensor
+    assert type(w.data) == torch.Tensor  # Access the underlying tensor
+
+    text("## Parameter initialization")
+
+    text("Let's see what happens.")
+    x = nn.Parameter(torch.randn(input_dim))
+    output = x @ w  # @inspect output
+    assert output.size() == torch.Size([output_dim])
+    text(f"Note that each element of `output` scales as sqrt(input_dim): {output[0]}.")
+    text("Large values can cause gradients to blow up and cause training to be unstable.")
+
+    text("We want an initialization that is invariant to `input_dim`.")
+    text("To do that, we simply rescale by 1/sqrt(input_dim)")
+    w = nn.Parameter(torch.randn(input_dim, output_dim) / np.sqrt(input_dim))
+    output = x @ w  # @inspect output
+    text(f"Now each element of `output` is constant: {output[0]}.")
+
+    text("Up to a constant, this is Xavier initialization. "), link(title="[paper]", url="https://proceedings.mlr.press/v9/glorot10a/glorot10a.pdf"), link(title="[stackexchange]", url="https://ai.stackexchange.com/questions/30491/is-there-a-proper-initialization-technique-for-the-weight-matrices-in-multi-head")
+
+    text("To be extra safe, we truncate the normal distribution to [-3, 3] to avoid any chance of outliers.")
+    w = nn.Parameter(nn.init.trunc_normal_(torch.empty(input_dim, output_dim), std=1 / np.sqrt(input_dim), a=-3, b=3))
 
 
-def deep_network():
-    image("images/deep-network.png", width=800)
-    text("Consider a deep network with L layers and D-dimensional inputs, activations, and outputs.")
+def custom_model():
+    text("Let's build up a simple deep linear model using `nn.Parameter`.")
 
-    # Define the network
-    D = 8  # Dimensionality of input, activations, and output
-    L = 3  # Number of layers
-    model = DeepNetwork(dim=D, num_layers=L).to(cuda_if_available())
+    D = 64  # Dimension
+    num_layers = 2
+    model = Cruncher(dim=D, num_layers=num_layers)
 
-    num_parameters = get_num_parameters(model)  # @inspect num_parameters @stepover
-    assert num_parameters == (D * D) * L
+    param_sizes = [
+        (name, param.numel())
+        for name, param in model.state_dict().items()
+    ]
+    assert param_sizes == [
+        ("layers.0.weight", D * D),
+        ("layers.1.weight", D * D),
+        ("final.weight", D),
+    ]
+    num_parameters = get_num_parameters(model)
+    assert num_parameters == (D * D) + (D * D) + D
 
-    # Run the model on a batch of data
-    B = 4  # Batch size
-    x = torch.randn(B, D, device=cuda_if_available())  # @inspect x
-    y = model(x)  # @inspect y
+    text("Remember to move the model to the GPU.")
+    device = get_device()
+    model = model.to(device)
+
+    text("Run the model on some data.")
+    B = 8  # Batch size
+    x = torch.randn(B, D, device=device)
+    y = model(x)
+    assert y.size() == torch.Size([B])
 
 
-class Block(nn.Module):
-    """Simple block that applies a linear transformation followed by a ReLU nonlinearity."""
-    def __init__(self, dim: int):
+class Linear(nn.Module):
+    """Simple linear layer."""
+    def __init__(self, input_dim: int, output_dim: int):
         super().__init__()
-        self.weight = nn.Parameter(torch.randn(dim, dim) / math.sqrt(dim))
+        self.weight = nn.Parameter(torch.randn(input_dim, output_dim) / np.sqrt(input_dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x @ self.weight  # Linear
-        x = F.relu(x)        # Activation
-        return x
+        return x @ self.weight
 
 
-class DeepNetwork(nn.Module):
-    """Map `dim`-vector to a `dim`-vector."""
+class Cruncher(nn.Module):
     def __init__(self, dim: int, num_layers: int):
         super().__init__()
-        self.layers = nn.ModuleList([Block(dim) for i in range(num_layers)])
+        self.layers = nn.ModuleList([
+            Linear(dim, dim)
+            for i in range(num_layers)
+        ])
+        self.final = Linear(dim, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Apply all the layers sequentially
+        # Apply linear layers
+        B, D = x.size()
         for layer in self.layers:
-            x = layer(x)  # @stepover
+            x = layer(x)
+
+        # Apply final head
+        x = self.final(x)
+        assert x.size() == torch.Size([B, 1])
+
+        # Remove the last dimension
+        x = x.squeeze(-1)
+        assert x.size() == torch.Size([B])
+
         return x
 
 
-def optimizer():
-    text("Recall our deep network.")
+def get_batch(data: np.array, batch_size: int, sequence_length: int, device: str) -> torch.Tensor:
+    text("Sample `batch_size` random positions into `data`.")
+    start_indices = torch.randint(len(data) - sequence_length, (batch_size,))
+    assert start_indices.size() == torch.Size([batch_size])
+
+    text("Index into the data.")
+    x = torch.tensor([data[start:start + sequence_length] for start in start_indices])
+    assert x.size() == torch.Size([batch_size, sequence_length])
+
+    text("## Pinned memory")
+
+    text("By default, CPU tensors are in paged memory. We can explicitly pin.")
+    if torch.cuda.is_available():
+        x = x.pin_memory()
+
+    text("This allows us to copy `x` from CPU into GPU asynchronously.")
+    x = x.to(device, non_blocking=True)
+
+    text("This allows us to do two things in parallel (not done here):")
+    text("- Fetch the next batch of data into CPU")
+    text("- Process `x` on the GPU.")
+
+    article_link("https://developer.nvidia.com/blog/how-optimize-data-transfers-cuda-cc/")
+    article_link("https://gist.github.com/ZijiaLewisLu/eabdca955110833c0ce984d34eb7ff39?permalink_comment_id=3417135")
+
+    return x
+
+
+def note_about_randomness():
+    text("Randomness shows up in many places: parameter initialization, dropout, data ordering, etc.")
+    text("For reproducibility, we recommend you always pass in a different random seed for each use of randomness.")
+    text("Determinism is particularly useful when debugging, so you can hunt down the bug.")
+
+    text("There are three places to set the random seed which you should do all at once just to be safe.")
+
+    # Torch
+    seed = 0
+    torch.manual_seed(seed)
+
+    # NumPy
+    import numpy as np
+    np.random.seed(seed)
+
+    # Python
+    import random
+    random.seed(seed)
+
+
+def data_loading():
+    text("In language modeling, data is a sequence of integers (output by the tokenizer).")
+
+    text("It is convenient to serialize them as numpy arrays (done by the tokenizer).")
+    orig_data = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=np.int32)
+    orig_data.tofile("data.npy")
+
+    text("You can load them back as numpy arrays.")
+    text("Don't want to load the entire data into memory at once (LLaMA data is 2.8TB).")
+    text("Use memmap to lazily load only the accessed parts into memory.")
+    data = np.memmap("data.npy", dtype=np.int32)
+    assert np.array_equal(data, orig_data)
+
+    text("A *data loader* generates a batch of sequences for training.")
     B = 2  # Batch size
-    D = 4  # Dimensionality of input, activations, and output
-    L = 3  # Number of layers
-    model = DeepNetwork(dim=D, num_layers=L).to(cuda_if_available())  # @stepover
+    L = 4  # Length of sequence
+    x = get_batch(data, batch_size=B, sequence_length=L, device=get_device())
+    assert x.size() == torch.Size([B, L])
 
-    text("Let's define the AdaGrad optimizer")
-    text("- momentum = SGD + exponential averaging of grad")
-    text("- AdaGrad = SGD + averaging by grad^2")
-    text("- RMSProp = AdaGrad but with exponential averaging of grad^2")
-    text("- Adam = RMSProp + momentum")
 
-    text("AdaGrad "), link(adagrad_2011)
-    optimizer = AdaGrad(model.parameters(), lr=0.01)  # @stepover
-    state = model.state_dict()  # @inspect state
+class SGD(torch.optim.Optimizer):
+    def __init__(self, params: Iterable[nn.Parameter], lr: float = 0.01):
+        super(SGD, self).__init__(params, dict(lr=lr))
 
-    # Compute gradients
-    x = torch.randn(B, D, device=cuda_if_available())
-    y = torch.tensor([4., 5.], device=cuda_if_available())
-    pred_y = model(x).mean()  # @stepover
-    loss = F.mse_loss(input=pred_y, target=y)
-    loss.backward()
-
-    # Take a step
-    optimizer.step()
-    optimizer_state = {i: dict(p_state) for i, (p, p_state) in enumerate(optimizer.state.items())}  # @inspect optimizer_state
-
-    # Free up the memory
-    optimizer.zero_grad(set_to_none=True)
-
-    text("## Memory")
-
-    num_parameters = D * D * L
-    parameter_memory = 2 * num_parameters  # (2 bytes for bf16) @inspect parameter_memory
-    gradient_memory = 2 * num_parameters  # (2 bytes for bf16) @inspect gradient_memory
-    optimizer_state_memory = 4 * num_parameters  # (4 bytes for fp32) @inspect optimizer_state_memory
-    activation_memory = 2 * (B * D * L)  # (2 bytes for bf16) @inspect activation_memory
-    text("It is customary to use fp32 for stability (accumulating averages over powers over many steps).")
-    text("Optimizer state memory:")
-    text("- AdaGrad: 4 bytes/parameter for storing second moments")
-    text("- Adam: 8 bytes/parameter for storing first and second moments")
-
-    # Putting it all together
-    total_memory = parameter_memory + activation_memory + gradient_memory + optimizer_state_memory  # @inspect total_memory
-
-    text("## Compute (for one training step)")
-    num_parameters = D * D * L
-    flops = 6 * B * num_parameters  # @inspect flops
-
-    text("## Transformers")
-    text("The accounting for a Transformer is more complicated, but the same idea.")
-    text("Assignment 1 will ask you to do that.")
-
-    text("Blog post describing memory usage for Transformer training "), article_link("https://erees.dev/transformer-memory/")
-    text("Blog post describing FLOPs for a Transformer: "), article_link("https://www.adamcasson.com/posts/transformer-flops")
+    def step(self):
+        for group in self.param_groups:
+            lr = group["lr"]
+            for p in group["params"]:
+                grad = p.grad.data
+                p.data -= lr * grad
 
 
 class AdaGrad(torch.optim.Optimizer):
@@ -680,31 +774,95 @@ class AdaGrad(torch.optim.Optimizer):
                 p.data -= lr * grad / torch.sqrt(g2 + 1e-5)
 
 
-def train_loop():
-    # True linear function with weights (0, 1, 2, ..., D-1)
-    D = 16  # Dimensionality
-    true_w = torch.arange(D, dtype=torch.float32, device=cuda_if_available())
+def optimizer():
+    text("Recall our deep linear model.")
+    B = 2
+    D = 4
+    num_layers = 2
+    model = Cruncher(dim=D, num_layers=num_layers).to(get_device())
 
-    # Data loader that generates (x, y) pairs
-    B = 4  # Batch size
-    def get_batch() -> tuple[torch.Tensor, torch.Tensor]:
-        x = torch.randn(B, D).to(cuda_if_available())
+    text("Let's define the AdaGrad optimizer")
+    text("- momentum = SGD + exponential averaging of grad")
+    text("- AdaGrad = SGD + averaging by grad^2")
+    text("- RMSProp = AdaGrad + exponentially averaging of grad^2")
+    text("- Adam = RMSProp + momentum")
+
+    text("AdaGrad: "), link("https://www.jmlr.org/papers/volume12/duchi11a/duchi11a.pdf")
+    optimizer = AdaGrad(model.parameters(), lr=0.01)
+    state = model.state_dict()  # @inspect state
+
+    text("Compute gradients")
+    x = torch.randn(B, D, device=get_device())
+    y = torch.tensor([4., 5.], device=get_device())
+    pred_y = model(x)
+    loss = F.mse_loss(input=pred_y, target=y)
+    loss.backward()
+
+    text("Take a step")
+    optimizer.step()
+    state = model.state_dict()  # @inspect state
+
+    text("Free up the memory (optional)")
+    optimizer.zero_grad(set_to_none=True)
+
+    text("## Memory")
+
+    # Parameters
+    num_parameters = (D * D * num_layers) + D  # @inspect num_parameters
+    assert num_parameters == get_num_parameters(model)
+
+    # Activations
+    num_activations = B * D * num_layers  # @inspect num_activations
+
+    # Gradients
+    num_gradients = num_parameters  # @inspect num_gradients
+
+    # Optimizer states
+    num_optimizer_states = num_parameters  # @inspect num_optimizer_states
+
+    # Putting it all together, assuming float32
+    total_memory = 4 * (num_parameters + num_activations + num_gradients + num_optimizer_states)  # @inspect total_memory
+
+    text("## Compute (for one step)")
+    flops = 6 * B * num_parameters  # @inspect flops
+
+    text("## Transformers")
+
+    text("The accounting for a Transformer is more complicated, but the same idea.")
+    text("Assignment 1 will ask you to do that.")
+
+    text("Blog post describing memory usage for Transformer training "), article_link("https://erees.dev/transformer-memory/")
+    text("Blog post descibing FLOPs for a Transformer: "), article_link("https://www.adamcasson.com/posts/transformer-flops")
+
+
+def train_loop():
+    text("Generate data from linear function with weights (0, 1, 2, ..., D-1).")
+    D = 16
+    true_w = torch.arange(D, dtype=torch.float32, device=get_device())
+    def get_batch(B: int) -> tuple[torch.Tensor, torch.Tensor]:
+        x = torch.randn(B, D).to(get_device())
         true_y = x @ true_w
         return (x, true_y)
 
-    # Define the model and optimizer
-    L = 2  # Number of layers
-    model = DeepNetwork(dim=D, num_layers=L).to(cuda_if_available()) # @stepover
-    optimizer = AdaGrad(model.parameters(), lr=0.01) # @stepover
+    text("Let's do a basic run")
+    train("simple", get_batch, D=D, num_layers=0, B=4, num_train_steps=10, lr=0.01)
 
-    # Train!
-    num_train_steps = 3
+    text("Do some hyperparameter tuning")
+    train("simple", get_batch, D=D, num_layers=0, B=4, num_train_steps=10, lr=0.1)
+
+
+def train(name: str, get_batch,
+          D: int, num_layers: int,
+          B: int, num_train_steps: int, lr: float):
+    model = Cruncher(dim=D, num_layers=0).to(get_device())
+    optimizer = SGD(model.parameters(), lr=0.01)
+
     for t in range(num_train_steps):
         # Get data
-        x, y = get_batch()
+        x, y = get_batch(B=B)
 
         # Forward (compute loss)
-        pred_y = model(x).mean()  # @stepover
+        pred_y = model(x)
         loss = F.mse_loss(pred_y, y)
 
         # Backward (compute gradients)
@@ -715,76 +873,48 @@ def train_loop():
         optimizer.zero_grad(set_to_none=True)
 
 
-def gradient_accumulation():
-    text("Large batch sizes: improve training stability")
-    text("However, activation memory scales with batch size, so might run out.")
-    B = 64     # Batch size
-    D = 1024   # Dimensionality
-    L = 16     # Number of layers
-    activation_memory = 2 * B * D * L  # (2 bytes for bf16) @inspect activation_memory
-    text("Gradient accumulation:")
-    text("- Compute gradient on micro batches")
-    text("- Accumulate the gradients (don't zero it out)")
-    text("- Every batch_size / micro_batch_size steps, update the parameters and zero out the gradients")
-    micro_batch_size = B / 4
-    activation_memory = 2 * micro_batch_size * D * L  # (2 bytes for bf16) @inspect activation_memory
+def checkpointing():
+    text("Training language models take a long time and certainly will certainly crash.")
+    text("You don't want to lose all your progress.")
+
+    text("During training, it is useful to periodically save your model and optimizer state to disk.")
+
+    model = Cruncher(dim=64, num_layers=3).to(get_device())
+    optimizer = AdaGrad(model.parameters(), lr=0.01)
+
+    text("Save the checkpoint:")
+    checkpoint = {
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+    }
+    torch.save(checkpoint, "model_checkpoint.pt")
+
+    text("Load the checkpoint:")
+    loaded_checkpoint = torch.load("model_checkpoint.pt")
 
 
-def activation_checkpointing():
-    text("For training, we need to store the activations of all layers")
-    text("For inference, we don't compute gradients, so we only need to store the current layer's activations.")
+def mixed_precision_training():
+    text("Choice of data type (float32, bfloat16, fp8) have tradeoffs.")
+    text("- Higher precision: more accurate/stable, more memory, more compute")
+    text("- Lower precision: less accurate/stable, less memory, less compute")
 
-    image("images/deep-network.png", width=800)
-    text("The memory usage is")
-    B = 64     # Batch size
-    D = 1024   # Dimensionality
-    L = 16     # Number of layers
+    text("How can we get the best of both worlds?")
 
-    x = torch.randn(B, D, device=cuda_if_available(), requires_grad=True)
-    activation_memory = 2 * B * D * L  # @inspect activation_memory
+    text("Solution: use float32 by default, but use {bfloat16, fp8} when possible.")
 
-    model = DeepNetwork(dim=D, num_layers=L).to(cuda_if_available())  # @stepover
-    memory = get_max_memory_usage(lambda: model(x).sum().backward())  # @inspect memory @stepover
+    text("A concrete plan:")
+    text("- Use {bfloat16, fp8} for the forward pass (activations).")
+    text("- Use float32 for the rest (parameters, gradients).")
 
-    text("Can we reduce this?")
+    text("- Mixed precision training "), link("https://arxiv.org/pdf/1710.03740.pdf")
 
-    text("Activation checkpointing = gradient checkpointing = rematerialization")
-    text("Key idea:")
-    text("- Forward pass: keep only activations at subset of layers")
-    text("- Backward pass: recompute the missing activations from the last checkpoint")
-    text("Philosophy: tradeoff memory for compute")
+    text("Pytorch has an automatic mixed precision (AMP) library.")
+    link("https://pytorch.org/docs/stable/amp.html")
+    link("https://docs.nvidia.com/deeplearning/performance/mixed-precision-training/")
 
-    # Store all activations:    x g1 h1 g2 h2 g3 h3 g4 h4
-    # Activation checkpointing: x    h1    h2    h3    h4
+    text("NVIDIA's Transformer Engine supports FP8 for linear layers")
+    text("Use FP8 pervasively throughout training "), link("https://arxiv.org/pdf/2310.18313.pdf")
 
-    # Define the model with checkpointing
-    model = DeepNetworkCheckpointed(dim=D, num_layers=L).to(cuda_if_available())  # @stepover
-    checkpointed_memory = get_max_memory_usage(lambda: model(x).sum().backward())  # @inspect checkpointed_memory @stepover
-
-    text("Can we reduce this even more, especially for deep networks (large L)?")
-
-    # Store all layers:   | h1 h2 h3 h4 h5 h6 h7 h8 h9 |
-    # Store no layers:    |                            |
-    # Store some layers:  |    h3       h6          h9 |
-
-    text("How frequently to checkpoint?")
-    text("- If store each layer's activations, then activation memory is O(L) and no recomputation.")
-    text("- If store no activations, then activation memory is O(1) and compute is O(L^2) (recompute from the start for each layer).")
-    text("- If store every sqrt(L) layers, then activation memory is O(sqrt(L)) and O(L) recomputation.")
-
-
-class DeepNetworkCheckpointed(nn.Module):
-    """Same as DeepNetwork, but with activation checkpointing."""
-    def __init__(self, dim: int, num_layers: int):
-        super().__init__()
-        self.layers = nn.ModuleList([Block(dim) for i in range(num_layers)])
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Apply all the layers sequentially
-        for layer in self.layers:
-            # KEY: only store activations at checkpoints, recompute the rest
-            x = torch.utils.checkpoint.checkpoint(layer, x)  # @stepover
-        return x
 
 ############################################################
 
@@ -792,15 +922,15 @@ def get_memory_usage(x: torch.Tensor):
     return x.numel() * x.element_size()
 
 
-def get_promised_flop_per_sec(dtype: torch.dtype) -> float:
+def get_promised_flop_per_sec(device: str, dtype: torch.dtype) -> float:
     """Return the peak FLOP/s for `device` operating on `dtype`."""
     if not torch.cuda.is_available():
-        # No CUDA device available, so can't get FLOP/s
+        text("No CUDA device available, so can't get FLOP/s.")
         return 1
-    properties = torch.cuda.get_device_properties(cuda_if_available())  # @inspect properties.name
+    properties = torch.cuda.get_device_properties(device)
 
     if "A100" in properties.name:
-        # https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-us-nvidia-1758950-r4-web.pdf
+        # https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-us-nvidia-1758950-r4-web.pdf")
         if dtype == torch.float32:
             return 19.5e12
         if dtype in (torch.bfloat16, torch.float16):
@@ -808,27 +938,22 @@ def get_promised_flop_per_sec(dtype: torch.dtype) -> float:
         raise ValueError(f"Unknown dtype: {dtype}")
 
     if "H100" in properties.name:
-        # https://www.nvidia.com/en-us/data-center/h100/
+        # https://resources.nvidia.com/en-us-tensor-core/nvidia-tensor-core-gpu-datasheet")
         if dtype == torch.float32:
             return 67.5e12
         if dtype in (torch.bfloat16, torch.float16):
             return 1979e12 / 2  # 1979 is for sparse, dense is half of that
         raise ValueError(f"Unknown dtype: {dtype}")
 
-    if "B200" in properties.name:
-        # https://www.primeline-solutions.com/media/categories/server/nach-gpu/nvidia-hgx-h200/nvidia-blackwell-b200-datasheet.pdf
-        if dtype == torch.float32:
-            return 75e12
-        if dtype in (torch.bfloat16, torch.float16):
-            return 4.5e15 / 2  # 4.5e15 is for sparse, dense is half of that
-        raise ValueError(f"Unknown dtype: {dtype}")
-
-    # Unknown GPU: return None so caller can handle gracefully
-    return None
+    raise ValueError(f"Unknown device: {device}")
 
 
-def benchmark(func, num_trials: int = 5) -> float:
-    """Return the number of seconds required to perform `func`."""
+def same_storage(x: torch.Tensor, y: torch.Tensor):
+    return x.untyped_storage().data_ptr() == y.untyped_storage().data_ptr()
+
+
+def time_matmul(a: torch.Tensor, b: torch.Tensor) -> float:
+    """Return the number of seconds required to perform `a @ b`."""
 
     # Wait until previous CUDA threads are done
     if torch.cuda.is_available():
@@ -836,13 +961,14 @@ def benchmark(func, num_trials: int = 5) -> float:
 
     def run():
         # Perform the operation
-        func()
+        a @ b
 
         # Wait until CUDA threads are done
         if torch.cuda.is_available():
             torch.cuda.synchronize()
 
     # Time the operation `num_trials` times
+    num_trials = 5
     total_time = timeit.timeit(run, number=num_trials)
 
     return total_time / num_trials
@@ -851,6 +977,12 @@ def benchmark(func, num_trials: int = 5) -> float:
 def get_num_parameters(model: nn.Module) -> int:
     return sum(param.numel() for param in model.parameters())
 
+def get_device(index: int = 0) -> torch.device:
+    """Try to use the GPU if possible, otherwise, use CPU."""
+    if torch.cuda.is_available():
+        return torch.device(f"cuda:{index}")
+    else:
+        return torch.device("cpu")
 
 if __name__ == "__main__":
     main()
