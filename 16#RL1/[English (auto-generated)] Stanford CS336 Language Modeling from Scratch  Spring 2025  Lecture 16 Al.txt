@@ -1,0 +1,2256 @@
+Okay. Uh we'll get started. Um
+this is the second of the post training
+lectures and we're going to talk about
+well we're going to finish off the
+lecture from from Tuesday first. Uh
+whatever remaining content we have. Um
+and then we'll talk about reinforcement
+learning from verifiable rewards kind of
+the new exciting thing that's been
+happening over maybe the last six months
+or so. um and really powering all of
+these reasoning models that you kind of
+see uh dominating the landscape. So, uh,
+before I get into the verifiable rewards
+part, um, the exciting, you know, math
+RL content, um, I'm going to go back and
+I'm going to finish off RLHF, right? So,
+this is, uh, a very very quick recap of
+the last few slides from Tuesday's
+lecture, right? So, we want to do
+reinforcement learning from human
+feedback, which is the setting where we
+observe pair-wise preference data, like
+which of the two responses are better,
+and we'd like to get a language model
+policy that sort of maximizes some sort
+of underlying reward. um for this
+preference data, right? Um and if you
+remember, DPO is this algorithm that
+allows to allows us to optimize this
+reinforcement learning objective. And
+this objective is hard because our
+language model, the policy, so to speak,
+is is on the bottom of this expectation,
+right? You're sampling from your
+language model. You're not just
+maximizing uh the likelihood under the
+language model. Um, and the way we're
+going to do this, um, you know, if you
+remember the derivation is that we're
+going to, you know, make the
+nonparametric assumption that our policy
+class is the set of all functions. We're
+going to rewrite the reward as a ratio
+of the policies. Um, and then plug that
+in to the Bradley Terry objective. And
+so what we're going to do is we're going
+to find a policy such that sort of the
+implied reward maximizes the probability
+of seeing sort of the references uh,
+sorry, the pair-wise preferences that we
+see, right? Um so now this is great
+because it's basically supervised
+learning on a kind of alternatively
+parameterized objective. Um which is
+nice. Um DPO updates have this following
+form. Um the reason why you know DPO has
+kind of took the world by storm for a
+bit um a year ago or so um is that it
+can be written in this very nice form
+where you know what you're going to do
+is you're going to take these gradient
+steps which are going to be you know
+multiplied by beta. That's kind of your
+regularization.
+You're going to have higher weight when
+your reward estimates are wrong. So
+you're going to update more when your
+sort of implied rewards are are not
+correct. Um and then it you're going to
+increase the likelihood of the good
+example and you're going to decrease the
+likelihood of the bad example. Right? As
+I was kind of saying, if you sort of
+remember what I was saying last lecture,
+um really RL algorithms kind of boil
+down often to just upweight the good
+stuff, downweight the bad stuff. And the
+subtlety really is in deciding, you
+know, h what the good stuff is and how
+much to upweight, right? And so this is
+one particular choice of doing that. And
+we'll see, you know, other things
+happen. Uh and so DPO um works pretty
+well. Um for a while essentially all the
+open model releases use some variant of
+a DPO uh to do their post training. Um
+and really it's just very easy to get
+working um compared to to uh PO. And so
+for a while it was um really the
+dominant approach. Um in the the time
+since then there was a huge flood of
+papers that was like you know asterisk
+PO. Basically everyone wanted to come up
+with a DPO variant. There was dozens and
+dozens of papers. Um there's so many
+that I don't think it's it's worth it to
+go over the big uh ocean of such papers.
+Um, I'll mention two, um, not because
+necessarily that I think they're like
+the right ones, but because I think
+they're ones that have been used
+recently, um, by people that are sort of
+really pushing the limits of of this
+kind of DPO style post training. One is
+SPIO. Um, and SPIO just makes a very
+simple modification or two simple
+modifications. Um, the first one is to
+really normalize the update size by the
+length of the responses. Um, we'll see
+kind of this theme appearing later. Um,
+and the other thing they do is they just
+get rid of the reference. So now we've
+lost the DPO sort of mathematical
+argument that you know what we're doing
+is looking at ratios of policies but
+well this is more purely looking at
+something looks like something where we
+upweight you know the um the good stuff
+and downweight the bad stuff under that
+sort of underlying motivation simpio
+totally fine um there's other variants
+uh where you don't do necessarily this
+like reference policy removal where you
+just sort of normalize by length um
+called length normalized dpo um that
+kind of people have done. Um, and this,
+you know, these two forms, DPO with
+length normalization and simpio were the
+things that were tried, you know, pretty
+extensively by, uh, AI2 folks when they
+did Tulu 3. Um, and I think one thing
+that I'll point out, so I'm going to
+pause for a moment because I feel like
+this is an important conceptual, not
+conceptual, just an important empirical
+point, which is that in RL a lot of the
+the findings are very very contingent on
+the specific setting, right? So
+depending on the environment in which
+you run it, depending on the base model
+that you have, depending on the the
+post-training preferences that you're
+running on, you will find pretty
+different conclusions. Um, and so one
+example of this, right? So, uh, you
+know, a bunch of the AI2 folks have been
+doing a lot of really good post-training
+empirical work. Um, and they had one
+work where they were sort of comparing
+DPO and PO and they had found that PO
+was better than DPO um, because of maybe
+it's on policiness and they show this,
+you know, this jump exactly is the DPO
+to PO gap. Um, and then in a later work
+in Tulu 3, they find actually if you do
+your SFT in a sort of nicer, better way,
+actually that just eats up all the gains
+of both PO and DPO. So neither of these
+really get any gains. And the only thing
+that does better is maybe DPO with
+normalization, right? Like pretty
+different conclusions. Of course, a lot
+is different between this left and right
+paper. Um, but it's not that one is
+wrong and the other is wrong. really
+that you should be careful about reading
+too many like generalized conclusions
+about any of this stuff on the basis um
+of one paper right so that's an
+important note even as I go and talk
+about you know PO and I go and talk
+about uh GRPO later in this you
+shouldn't really take any single
+experimental result necessarily as
+gospel okay so the last thing I want to
+end with for RLHF um is sort of two
+important things um and one of them will
+really just motivate I think the
+entirety of today's lecture so I think
+that's important so the first is
+overoptimization. Um so in some sense
+this is just overfitting in fancier
+naming but it is a a term that I think
+is very important because what it's
+saying is essentially as you optimize
+your policy more and more so think about
+this x-axis as how much RLI did
+initially your reward kind of goes up
+and up and up but eventually you know
+the reward that reward models that you
+fitted on human preferences are
+diverging from you know real human
+preferences and the more you optimize
+you eventually kind of diverge out right
+like you're not doing any better you're
+just you know optimiz optimizing uh but
+not actually improving your rewards,
+right? So this overoptimization thing
+appears basically everywhere in RHF. It
+is a very big problem. Um and so that
+that is kind of a a concern. Um and
+overoptimization is a phenomenon that
+really happens in many ways because of
+the noisiness of human preferences and
+the complexities of human preferences.
+So so um some of my students had a study
+where you know they basically did RLHF
+on human preferences. They did RLHF on
+noisy versions of, you know, AI feedback
+and then they did RLHF on non-noisy
+versions of human feedback. And you see
+clear over optimization phenomena both
+for humans and for noisy AI feedback,
+but not really for sort of clean
+noiseless um AI feedback. And so really,
+you know, if you're going to be
+post-raining, you should expect to see
+curves that look like things on the
+left. as you train your model to do
+better and better on your sort of proxy
+rewards that you've measured, you're not
+necessarily going to get better and
+better models in terms of uh sort of
+human preference win rates. Okay? And
+then the other thing which is an
+important side note is that when you do
+RL, right, remember that I said that
+we're no longer in probabilistic world,
+right? So when you're doing supervised
+fine-tuning or when you're doing
+pre-training, it's quite clear that what
+you're doing is you're trying to do
+probabilistic modeling on some
+distribution, right? you're doing
+distribution matching for something,
+right? Um, but RLHF is all it's all just
+a policy. There's no underlying
+necessarily distribution. And how this
+manifests is that often you'll get much
+less calibrated models, right? A number
+of results across many different papers
+have shown that, you know, RLHF models
+um often, especially at temperature one,
+you know, show much more overconfident
+behavior. So, this one was from one of
+the anthropic papers. This one was from,
+I think, the GPT4 release. Um this one
+was from a a paper that one of my
+posttos did. In all these cases
+essentially the RLHF models are much
+less calibrated and maybe that's fine
+right because calibration isn't part of
+the reward that you're putting in. So so
+that's you know as designed but you
+should be very careful thinking of these
+models as sort of calibrated
+probabilistic models which you might be
+sort of tempted to do if you're kind of
+coming into this from a generative
+modeling um background. So, okay. Um, so
+up until now, we've been kind of
+thinking about um, RLHF and all these
+things. Actually, I'll stop for a
+moment. If anyone has any final
+questions for RLHF, I'll answer them
+before I go on because we're going to
+totally switch topics to uh, RL from
+verified rewards in a moment.
+Yes. Uh, going back to the human
+preferences graph, what's what are the
+two axes that that we're looking at?
+This one? Yeah. Yeah. So, the x-axis is
+proxy reward. So, um, here we're fitting
+like a reward model. We're not we're not
+doing VPO here, right? So let's say
+we're doing something like PO where we
+fit a a reward uh classifier and the
+X-axis is saying how well did my RL
+algorithm optimize that reward
+classifier. Right? So this is success at
+RL on is on the X- axis. Y-axis is this
+is kind of like true win rates either
+measured by you know AI feedback here or
+human feedback. So this is like real
+human votes you know on the y- axis
+here. Um, and so this is saying you
+might think that succeeding at RL will
+make you succeed at the actual task that
+you know you're trying to optimize for.
+That's not the case. It will overfit at
+some point for at least human
+preferences. Um, yes. So question
+why is it written in that not like beta
+log a minus log b or just like log of a
+b like are you just asking like why
+don't they like pull the fractions out
+in the log or because I thought is this
+like a numeric computation thing that
+like when you take these two ratios the
+taking the log is easier to compute and
+that's why we want to do no I don't
+think that I think taking ratios is
+actually add numerically. So I think
+this is really just like a save the
+space you know the ratios you know are
+are more compact and they're also
+intuitive objects right so the moment
+you put simple it becomes a different
+form because you no longer have the same
+beta concept yes that's right yeah
+simpio is just like a very different
+motivation for why you would do this
+thing right there's no ratios it's a
+very fundamentally different object
+yes in the graph where you showed like a
+more sort of hacking thing um I was
+wondering like how you like how the
+measure like you know the ground truth
+of like the reward score, right? Cuz
+presumably the reward function is a
+model like the human preference, right?
+But it's kind of like a train test gap,
+right? The x-axis here, you know, you
+have a train set, you fit a reward model
+on it and you're measuring that fitted
+reward model, right? And the y-axis is
+fresh samples from the true reward
+oracle, right? Um and so they're
+measuring in expectation the same thing,
+but they're not measuring in finite
+sample the same thing. like the same
+this is the same as like train test gaps
+in machine learning right same
+conceptual object they are in
+expectation measuring the same thing um
+for any finite sample that's not the
+case okay good um so I think you know
+all this questions about um
+reinforcement learning from human
+feedback I think brings up a good point
+which is that you know human feedback is
+very difficult to optimize it's very
+difficult to scale and so you might
+wonder are there other kinds of more
+effective RL that we can bring to bear
+on post training right And that's going
+to get us here, right? So, up until now,
+we've been kind of talking about chat
+GBD 3.5 and that era of models. And now
+I think we want to talk about 01 and the
+the you know the new set of kind of
+reasoning style models, right? And the
+way we're going to get there is kind of
+this thinking of saying, okay, we have
+this very powerful tool now. We have
+this reinforcement learning tool that we
+can use for post- training. Um, and
+initially, you know, the the instinct
+was to say, you know, there's one true
+objective, and that objective is whether
+people like the bot, right? And so, if
+we just optimize for the true objective
+we care about, that's all we need. Turns
+out to be very difficult, right? Human
+uh human uh approval is easy to hack.
+It's hard to collect at scale. It's hard
+to RL at scale. For all those reasons,
+you see, you know, overoptimization and
+all these kind of issues. On the other
+hand, we could instead turn to to where
+RL has really dominated, right? things
+like alpha go or alpha fold. And then
+you know looking at those domains you
+might say you know what we really need
+is kind of a domain which we know the
+true reward and for which we can
+evaluate such true rewards very quickly
+and efficiently and at scale right and
+if we could do that then we can bring to
+bear all of the successes of
+reinforcement learning from the past
+into language modeling. Right? So that's
+the overall mindset that we're we're
+we're adopting now. Right? We have the
+tools that we've built. Now let's apply
+them into a very kind of different way
+of using the same tools, right? Taking
+inspiration from successes in in RL.
+Okay. Um and so today I'm going to talk
+in two parts, right? So the first part
+is just going to be an algorithmic part,
+right? So this part on the very top I'm
+going to talk about different um
+algorithms. First I'm going to talk
+about PO in more detail because you know
+I kind of cut that from last lecture for
+length reasons. And then I'm going to
+transform PO into GRPO. um a simpler
+version in some sense and then we'll
+talk through those objectives and
+various uh implementation details of
+GRPO um to get us to multiple like
+canonical variations of GRPO and having
+done that we will then walk through the
+three I think uh big reasoning model
+sort of training things that have been
+done as case studies um since after part
+one you'll have all the tools that you
+need to understand everything that is
+happening in part two right and after
+you do part two you'll understand at
+least how these three uh Chinese open
+LMS were made.
+Okay, so now we are going to return to
+PO. Um it is the thing that I didn't
+want to do but we have to do in order
+for you to understand why GRPO exists,
+right? Um so what is PO? Um at least in
+my sort of mental model of what PO is,
+we start from the simplest possible
+thing and then we move you know slowly
+but surely downwards to PO, right? So
+the simplest possible thing um I
+mentioned this in last lecture. This is
+the policy gradient, right? So on the
+left, I would like to optimize the
+expected reward under my policy P of
+theta, right? Um, and we're going to
+optimize that through gradient descent.
+So I take the gradient of that object
+and I get the right hand side of that
+equation, which is the policy gradient,
+the expectation uh under my current
+policy of the reward and I'm going to
+take gradient steps that sort of either
+increase or decrease the probability
+according to the sign of the reward Z.
+Right? Um, hopefully straightforward. Um
+if this is not familiar to you, you can
+sort of brush up on how that policy
+gradient derivation happens. Now um
+there are two things that we might want
+to to think about uh here that are kind
+of inefficient, right? So the first
+thing is that this is uh what you might
+call purely on policy, right? So the way
+that the reinforced gradients work, I
+have to sample from P theta and then I
+will immediately take a step uh on those
+sampled examples, right? And so every
+time that I want to take a gradient
+step, I have to compute a reward, right?
+and I have to do a roll out. You will
+sort of understand this in your in your
+assignment five, but the expensive part
+of RL is the rollouts, right? We have to
+actually run the language model and get
+samples. And we know that that's slow,
+right? From Percy's inference lecture,
+we know that that's very complicated.
+It's very tricky. Um, we would much
+rather sample less frequently, right? We
+we do a roll out once, we sample once,
+and then we take multiple updates on
+those rollouts. So that motivates
+something called TRPO, right? where
+instead of taking updates from P theta,
+I would like to allow my sort of updates
+to go stale. So what I'm going to do is
+I'm going to sample from um P theta old,
+this sort of base distribution down here
+um but still get sort of valid policy
+gradients. Well, how can I do that?
+Well, I can do what's called an
+important sampling correction and then I
+can keep, you know, um, my policies
+close to my old one so that I don't get
+too far uh, from my old one and get sort
+of crazy reward estimates. Right? Very
+simple idea. Just do a little bit of off
+to on policy correction. You get
+something called TRPO. This a of T is a
+lower variance version of R of Z. I'm
+not going to talk about advantage
+estimation uh, in much more detail. PO
+is a is a simple extra step beyond this.
+It says, you know, instead of doing KL
+divergences, I'm just going to clip the
+advantages. And this is naturally going
+to force my policy to remain close
+because if I go too far, then I'm not
+going to be able to get higher and
+higher rewards. These rewards will just
+get clipped off at sort of a one minus
+epsilon or one plus epsilon. There's an
+upper bound to how much reward I can
+collect. So there's no incentive for the
+RL algorithm to make the policy really
+different from the current one, right?
+So it's a soft version you can say think
+of kind of this idea. Okay, so PO very
+successful RL algorithm um used in many
+different places um you know used in
+sort of very toy RL environments uh it
+was used in OpenAI sort of Dotaabot um
+works very well in such actual RL tasks
+oh yeah there was a video I forgot about
+that yeah look you can run around yeah
+okay um and at a conceptual level it's
+not that complicated right um if you go
+look at the openai documentation uh for
+PO it looks fairly simple right you see
+that equation that I listed above, it's
+this po clip objective. And really the
+only thing that's maybe slightly
+complicated is that this a of t is
+actually calculated by using something
+called a value function. So you need a
+second neural network to essentially
+compute kind of the expected rewards. Um
+and that would be used to to in some
+sense lower the variance of my
+gradients, right? Um I'm not going to go
+into the details once again of of sort
+of all the RL details but you know the
+one implementation uh difference here
+that matters is that we need this value
+function and that will become important
+in a moment here.
+Um but PO in practice is a very very
+different beast from PO in theory. Um
+and you know you're in for a very bad
+time if you know there's a blog post
+that says 37 implementation details of
+PO. Um you know I don't want to know all
+37 of those guys. Um, and you know, it's
+a there's a huge long list of sort of
+different PO variants in this blog post
+and all of them have the different
+scores on the RL uh benchmarks and
+there's a whole paper written on why
+implementation details matter in PO and
+how if you really mess it up, you're not
+even computing the policy gradient
+correctly anymore, but it actually works
+better, right? Um, so it's kind of a a
+crazy place. Um, if you look at the
+implementation details of PO and so we
+actually do have to maybe look at a live
+implementation detail. Um, I'll actually
+go over it quickly because PO isn't the
+point of this lecture. But what I want
+to get across to you is, you know, you
+all haven't been necessarily working on
+this post- training space. Like why do
+people care so much about alternatives
+to PO? It is because of things like
+this, right? PO works well, but it is
+kind of a beast. Um, and this is one
+example I think from the early days of
+of RLHF uh re-implementations.
+Um, there was this nice diagram
+describing, you know, this is how you
+would do a pretty standard
+implementation of PO. This diagram is
+pretty gnarly, right? We've got a reward
+model for RLHF. We've got a value model
+that's supposed to keep track of kind of
+the expected reward. Um, we've got
+generalized advantage estimation. I
+haven't even explained what that is. Um,
+and that's going to go into the policy
+um, language model. and we're going to
+do, you know, our policy gradient
+updates. So there's there's all this
+sort of machinery that has to go into
+place for PO to work. Um so we're going
+to look at an implementation. Um a few
+years back now actually um some of my
+students and I did you know
+reimplementations of algorithms like PO
+um and other people have used it. So
+this is an implementation that's been
+somewhat tested. Not to say that this is
+a good implementation. I'm sure you know
+something like uh more modern
+implementations from Volcano Engine and
+other things uh probably work a little
+bit better but I just want to walk you
+through all the different components. Um
+also because as you write um GRPO in
+your assignments your structure will
+probably mirror some aspects of this
+right all RL algorithms have similar
+kind of outer loop. So um if we look at
+this right so a a PO step looks very
+similar to a standard uh gradient update
+step uh in a language model. So this is
+the outer sort of loop. What we're going
+to do is we're going to you know get a
+bunch of rollouts. Um and once we get
+you know a bunch of rollouts what we're
+going to do is we're going to compute
+some losses and then we're going to just
+take backwards and then gradient steps
+with you know clip norm and that's it
+right very unintimidating. the outer
+loop of of RL is is usually fine, right?
+Um, you know, loss computation is also
+basically the same thing. So, um, this
+is probably uh small for those of you in
+the back. Um, but if you look at this,
+you know, what you have is one block
+that's computing the loss for the value
+function. Remember, PO has both a value
+function and a policy. So, we have to
+update both of those at once. So, we're
+computing how close is the value
+function to kind of the actual sort of
+returns, the rewards that we saw. Um,
+and we want to keep those close because
+the value function is supposed to
+provide variance reduction. And then
+we've got the actual sort of rewards
+that we're going to update on for uh PO.
+And then we have sort of the clipping
+constants 1 - epsilon 1 plus epsilon.
+This code is literally just copying this
+back over. And just to give you sort of
+some, you know, intuition for
+hyperparameters, you know, a typical
+clip range might be something like 02
+here, right? So, so you would be allowed
+to go essentially from 0.8 to 1.2 two in
+likelihood ratio between your old and
+new policy. Um the rollouts is where
+things start to get gnarly, but this is
+still essentially just calling
+inference. The left side is really just
+sampling, you know, rollouts from your
+current policy and then you evaluate the
+log problems of your samples and you
+move on to the right and what do you
+see? Well, uh the only subtlety here is
+that your value and your reward and your
+policy may have different tokenizers. So
+you got to do retokenization. But
+otherwise you just feed your rollouts
+into the model. So okay, at this point
+you're like looking at this code and you
+say okay that's fine like this is not
+not so horrible. Um but the places where
+things start to get a little bit tricky.
+Um is first we have to do some reward
+shaping right? So what does this mean?
+Um so stepping slightly back. One thing
+that's weird about reinforcement
+learning for language models is if you
+you know think about it from the RL
+perspective technically it's kind of
+like a contextual bandit. Well, what
+what is a contextual bandit? A
+contextual bandit is something where you
+get an input and you have a bunch of
+possible, you know, uh actions to take
+and you immediately get a reward, right?
+In language modeling, you get a prompt,
+you can give an output, and you
+immediately get a reward. There's no
+like state transitions. There's no
+environment exploration. There's none of
+this like complexity, right? Um reward
+shaping here is essentially constructing
+um uh per token losses in order to be
+able to give you something more uh easy
+to learn for the RL algorithm. And so
+what happens in practice for PO and for
+GRPO which you'll be implementing um is
+that the KL terms essentially the
+regularization that we're applying is
+actually computed per token whereas the
+um actual true reward like the did you
+complete the task or not kind of thing
+that's computed at the very last token.
+Right? So you see that there's
+essentially a per token reward for the
+regularization and there's a single
+terminal reward at the end for um
+success or not. Yes. What does it mean?
+What does not work?
+Um, oh, right, right, right. This is um
+this is a Right, right. This is uh kind
+of funny. This basically we're only
+adding per token KL penalty, but once
+again, this is one of those funny um uh
+PL implementation things. Um this second
+line here, this is the actual true KL
+calculation. Um but when this number
+goes to negative, um it becomes
+numerically unstable and you can
+actually hit that pretty often. And so
+this gets clamped off at zero, which you
+know all of you know if you clip off a a
+log likelihood uh ratio at zero that's
+not a KL anymore, but it is some
+approximation to a KL. Yes. What are um
+so we've talked about like boss
+function. What are our update steps
+especially like as it relates to the um
+the reward function? Is that the same as
+other Yeah. Yeah. Good good point. So
+the the updates you know as I was saying
+in this outer loop is actually just
+taking gradient steps. So in terms of
+your code it will look no different than
+just taking you know normal gradient
+steps. Um what is happening here though
+is in some sense uh let's go back to the
+policy gradient equation here. Um right
+if you write down this thing this is r
+of z * p theta z. This is kind of like
+just taking gradients with respect to
+theta of rzp log p theta z. It's a
+weighted loss that you then take
+gradients of. Um, and what you're not
+doing is technically if you're taking a
+real gradient, you should also take a
+gradient into P theta, but you don't do
+that. There's kind of a stop implicit
+stop gradient. And so all you do is you
+compute this inner loss, you feed it to
+the autograd, and you'll get the right
+steps for the rein uh for the policy
+gradient.
+Um, yeah, you'll have to do that for for
+the assignment as well. And we have like
+a little tutorial that explains kind of
+what's going on there in case that that
+quick explanation was not clear. Okay.
+And finally, the part that I think is
+the gnarliest is there's a the box that
+I did not explain called generalized
+advantage estimation, right? Um so what
+you need to do whenever you have a
+policy gradient, um the variances of the
+gradient are often very high, right? And
+so you want to do as much variance
+reduction as you can. And instead of
+multiplying the gradients with uh the
+rewards directly, you can instead you
+can show that the following um a of t
+quantity which is essentially a
+discounted um advantage estimate. That's
+a sort of RL term um is an appropriate
+substitute. And so one of the things
+that PO does that's very different is to
+use this advantage estimate where you
+can tweak lambda um and gamma to trade
+off bias and variance uh of your
+gradients. One of the funny things
+though is despite kind of the annoyance
+of this this implementation complexity
+of like maintaining this value function
+and estimating all these quantities um
+you can just pick gamma equals lambda
+equals 1 which reduces this whole thing
+basically to a baselined policy
+gradient. So your guts taking R uh minus
+the the implied value. Um and that works
+well too. And so the point of making you
+go through this was um a lot of the
+implementations details for PO are both
+simple in that it is just the outer loop
+RL. You do just take gradients and also
+kind of annoying, right? You have to do
+all these sort of clipping things. You
+have to think about what am I going to
+do with the generalized advantage
+estimate. Um what am I going to do to
+train the value um estimate? Um but you
+expect to see, you know, overall
+increasing rewards. um including reward
+models and sort of negative KL rewards
+kind of go down. This is a once again um
+a contextual bandit. So you expect to
+see pretty reasonable training curves,
+not like crazy RL ones. Okay, so I went
+through PO. Um that was kind of a
+whirlwind tour, but I think hopefully
+you get the context of a what PO is and
+b that it is sometimes a little bit
+tricky to get working right. And so, you
+know, this has motivated a lot of people
+to try to find alternatives to PO. Um,
+what we're going to want to do is to
+apply, you know, essentially these RL
+algorithms to settings where PO applies.
+And PO applies very well to to general
+RL settings where you have sort of
+rewards. Um, but we don't want the
+complicated implementation. And maybe
+more importantly, we want to get rid of
+the value model. That is actually if you
+try to implement PO really, really
+annoying, right? because a value model
+is usually as big as your policy. So now
+in terms of GPU memory, you're paying
+twice the cost of your language model.
+Right? Now you might say, okay, uh why
+can't we use DPO? Well, DPO is well
+suited for like pair-wise comparisons
+like Bradley Terry comparisons. Um it's
+not so good if what you want to do is
+let's say do reinforcement learning on
+math questions and check whether or not
+the answers are correct, right? There's
+no pair-wise structure so to speak
+inherently there. So maybe DPO is not
+great, right? Um, DPO also, you know,
+originally is is kind of an offline
+algorithm in a sense in that it has a
+whole bunch of sort of pairs that you
+initially collect and you just update
+your model on those. You could make it
+online by iterating, but that's not
+usually the way in which uh people apply
+GPO.
+So then now this brings us to the new
+hotness which I think is uh GRPO, right?
+So GRPO is actually very very simple um
+both in motivation and in actual
+implementation. So where you start with
+is conceptually you start at PO, right?
+You start with very similar pieces. Um
+you think about kind of this clipping
+thing. You think about policy updates in
+very similar ways. Um but what you do is
+you remove the really complicated
+generalized advantage estimation. You
+just get rid of it completely. Um and
+you replace it with something that is
+much much simpler. Right? Uh so what is
+the much simpler thing? Well, we are
+going to replace um the advantage which
+used to be this like GA thing. It was
+the sum o over returns and had the value
+function in there. Instead, it's going
+to be this equation three at the bottom
+of this slide here. Um and what is this?
+Uh the advantage of you know response I
+is equal to the reward that response I
+receives minus the mean of the responses
+within my group. And I'll define what a
+group is in a moment. and then divided
+by the standard deviation of the rewards
+within the group. So this is a zcore uh
+if you know what that is um of the
+rewards within the group. Right? Now
+what is a group? A group is a very in
+some sense natural object for for
+language model RL. You have an input
+question. Let's say like solve this math
+problem. Right? That is a group. And I
+have many different candidate responses.
+I have capital G uh different responses.
+Um and those are all the responses
+within my single group. Right? So um the
+nice thing is if you think about it
+right maybe problems are harder or
+easier right you know some math problems
+are much harder than others um and
+because of that the average reward that
+my sort of other samples receive is a
+natural baseline for myself and and
+people have explored exactly these kinds
+of algorithms um if you look up like uh
+reinforcement learning with leave one
+out or sorry policy gradients with leave
+one out this is the leave one out
+baseline um in action minus the standard
+deviation piece um right
+Um the yes I was wondering
+talking about here like so you said it's
+a it's like they have a batch of
+questions right and then there are
+answers to it which are reported so like
+is each like answer only corresponding
+to one unique question or are we doing
+like multiple like kind of um like
+trajectories of the same question for
+multiple questions right you do multiple
+answers per question and that's how you
+get kind of variance reduction in
+like multiple different questions and
+also like kind of like multiple answers
+for each of the questions. Is that a
+really important example? No. No. So for
+each question Q, GRPO samples a group of
+outputs, right? So so I mean this is not
+batched like you you normally you would
+if you were doing this for real, you
+would have multiple questions and for
+each question you'd have G responses and
+those would get baseline together.
+Across questions you would have no
+baselining or any interaction really
+other than the policies get updated
+together. Okay. So the the baseline is
+only doing within the same question. And
+that that's why the baseline makes
+sense, right? Because a question is like
+hard or easy and the mean of that that
+reward isn't sometimes capturing the
+question difficulty and you're
+subtracting that guy out.
+Okay, good. Um and the other thing, this
+is a fun note. Um I I'm going to mention
+it because I just kind of think this is
+fun and cool. Uh this DKL, uh if you've
+seen lots of KL divergence computations,
+um this is actually a little
+non-standard, right? uh because the
+natural kale divergence estimate is
+actually just you you take a bunch of
+samples and then you compute the average
+of the log ratio which is kind of this
+inner term over here right um but this
+one from from gpo actually has these two
+extra terms it has the log or has the
+ratio of pi ref over pi theta and has
+this minus one um and you can kind of
+convince yourself that if you take the
+expectation of this with respect to pi
+theta um you know this is just going to
+be uh cancelling with this one over
+here. So this is a control variant
+scheme that reduces the variance of uh
+this KL divergence estimate which is
+cool uh because maybe you all need to
+estimate KL divergence from samples. Uh
+this equation two is just a slightly
+nicer way of estimating that exact same
+thing. Okay.
+Um and GRPO is really nice. Um oh one
+one last note. Um if you're only taking
+one step which is doing the pure online
+case, right? all this clipping stuff
+just kind of disappears and all you're
+doing is policy gradients, right? Policy
+gradient is just upweing good stuff and
+downweing bad stuff where the rewards
+that I'm multiplying the policy
+gradients by is this avi. So it's just
+like an incredibly simple algorithm for
+the the truly online case where you're
+not doing multiple steps on a single
+example. Um so there's multiple kind of
+different repositories um for gpo
+implementations. Um I I can point you to
+several including uh this one that I
+sort of copied and put onto this slide
+here. Um but basically uh I can just say
+that it's it's exactly the way you think
+it would go. Um sort of in the outer
+loop you would compute the reward for
+each nor roll out you normalize for each
+group the the mean and the variance of
+the rewards. You'd compute the KL term
+in this case per sequence which isn't
+quite right uh for the more heavyweight
+implementations. And then you do
+gradient updates on the loss. And this
+is you know one example of the loss
+computation that you also have here. Um
+and the advantage computation unlike in
+the uh PO case is just really really
+simple. Uh this is almost exactly you
+know line for line the equations that I
+showed you with just one minor
+difference that's not shown in the
+equation which is that you know as you
+do in almost everything because we're
+dividing by the standard deviation you
+add a tiny fudge factor of 1 eg4 to to
+make sure it doesn't numerically uh blow
+up on you right and you'll have to do
+this in the assignment as well. you'll
+have to add a little epsilon uh to your
+gpo uh setup.
+So, how well does this work? Um gpo
+works pretty well. Um this is from the
+original uh deepseek math paper. Um and
+I'll get back to this later because it
+is interesting um to look at this this
+plot and this result in light of later
+R1 results. Um they show essentially uh
+the two fine-tuning based methods uh RF
+and online RFT. This is basically a a
+fairly weak baseline I would say. um
+where what you're doing is you're only
+looking at examples that sort of get the
+right answer. They're doing math in this
+case. So you only get examples where you
+get the right answer and you fine-tune
+on your own outputs that got the right
+answer. Right? Reinforcing uh correct
+answers with fine-tuning. Um GRPO with
+outcome level rewards where you only get
+a correct or not answer is the yellow.
+The blue one is process level rewards
+where it's kind of you got a system that
+looks at each step of your reasoning and
+sort of gives you a grade for that. And
+they're arguing, you know, maybe process
+rewards are better. We'll talk a little
+bit more about that later. But in in
+either case, you see that gpo works and
+it works um pretty well.
+Okay, any questions about the basic gpo
+piece before we move on to kind of
+details about gpo and thinking kind of
+deeply about what's actually happening
+in the algorithm?
+Good. Okay. So now let's think about uh
+the difference between uh gpo and po and
+and what we've done and what's
+different. Okay. So really there's, you
+know, as I was saying, only one
+difference, although it's a really
+important difference. It's replacing the
+the advantage estimator with this thing,
+right? The the mean uh or the zcore,
+let's say, of the rewards. Um, and so
+now I'm going to kind of go back to uh
+the policy gradient theorem or the
+policy gradient result, and I'm going to
+think through this result with you,
+right? So when we uh when we take a
+policy gradient update, right, what can
+we do? So I'll just go back a couple
+slides, right? Um
+on this slide, we've got right here at
+the very top policy gradients. This is
+the most basic RL algorithm that you can
+do, right? You take gradients where you
+multiply the log probability gradients
+with the reward. Right? This is
+something that I'm always allowed to do.
+This is a mathematical equivalence.
+Right? Now, one other thing I can do is
+called baselining. I can take this
+reward Z and I can subtract any constant
+uh or any in fact any random variable
+that doesn't depend on uh Z itself. Um
+and this would still be a valid uh
+policy gradient. Right? So so this
+baselining thing is really important
+because what you're going to try to do
+is you're going to try to subtract
+constants that give you lower variances
+on this expectation. Right? So that's
+called baselining. Um and if we go here,
+you know, that's kind of um a classic
+result that you can look up in Senarto.
+They say, okay, look, we've got the
+policy gradient. You can subtract out
+any baseline B of S because B of S, you
+know, when we sum it up across the
+policy is going to be zero, right? Um so
+this is fine, right? We can always
+baseline, but let's look at this A of A
+of I. Is this a baseline? Well, um,
+we're subtracting the mean and that's
+kind of a baseline because all the other
+rewards are not dependent on RO of I. So
+maybe that's okay. I mean, technically
+this notation includes RO of II, but if
+I remove that, that's a valid baseline.
+But one thing that's really weird is I'm
+dividing by the standard deviation here,
+right? That that's not something that
+really seems allowed according to this
+derivation in Senardau.
+Um, and that turns out to be a problem.
+uh some folks uh that have gone and you
+know reanalyzed gpo and its behaviors
+basically argue that gpo has two things
+that at least mathematically are a
+little bit off. Um and the first thing
+is this division by standard deviation
+right as I was kind of talking you
+through just now this breaks that sort
+of you know contract that a baseline
+just needs to be subtracting a zero mean
+uh variable uh that's you know
+independent of of my draw. Um, and the
+other thing that GRPO does, uh, which I
+did it kind of, sorry, I glossed over
+when I previously presented it, is that
+it's actually dividing, um, kind of the
+rewards by the length of the output. Um,
+and that's going to have that's also a
+little bit weird according to the policy
+gradient theorem. This is not something
+that would naturally show up. Um, and so
+these authors who did like this this
+pretty interesting study of uh GRPO
+algorithms kind of argue that maybe we
+should just get rid of these two things.
+And if you do, then you'll actually have
+much shorter output length and higher
+reward without having much longer
+responses.
+Um, and so let's talk about these
+results uh, you know, uh, carefully for
+each one of these two fixes. Um and
+hopefully by talking through these you
+will gain an intuition about how the RL
+algorithm works. Right? So first I want
+to talk about uh the standard deviation.
+Um this one's maybe somewhat obvious
+what it's doing. Um okay let me let me
+go back because I think it's easier to
+talk about when I'm highlighting the
+equation here. Um so I'm dividing the
+advantage by the standard deviation. So
+what does that mean? When the standard
+deviation is small, right, the reward is
+going to be amplified. it's going to be
+more important for me to optimize that
+group when the standard deviations are
+small, right? And when is the standard
+deviation small? Well, it's when the
+problem is too easy or it's too hard,
+right? Because that's when the rewards
+are either all zero or they're all ones.
+And so there's a bias in the standard
+deviation term that upweights problems
+that are too easy or too hard. Um the
+authors argue this slows convergence.
+Maybe true. At the very least, it
+certainly breaks the validity of the
+policy gradient. The second thing which
+is subtle but also interesting is the
+length normalization.
+Now let's kind of look at what's
+happening here. So we have this length
+normalization before the gpo reward. Now
+what does that do? If my model got a
+question wrong, right? Then the best
+thing to do is I'm receiving negative
+reward in here. So the best thing to do
+is to make the response really really
+long. And if I get the answer right, the
+best thing to do is to make the answer
+short so I can sort of maximize my
+positive reward. Right? So what this
+does is it actually produces uh a model
+that kind of BS as aggressively as
+possible. If the model thinks it can't
+get the answer right, it just produces
+the longest possible response, which is
+a very very bad incentive for you to
+give the model. Um and so if you fix
+this, uh what happens is, you know, on
+various sort of toy tasks like GSMAK and
+so on, you you can get um a reward
+that's just as good. The red one is sort
+of the modified version, but the output
+length doesn't keep growing and growing
+and growing. It sort of like stabilizes
+at a certain point, right? Um and so
+there is actually some interesting
+observation that like maybe some of the
+really long coots that people are seeing
+in uh things like gRPO are a result of
+these like actual implementation details
+and choices rather than inherently long
+coots being a necessary part of the
+performance of these models. And I think
+that's like a very interesting although
+not fully proven out uh class of
+hypothesis.
+Cool. Okay. So that's the GRPO
+algorithm. Hopefully now you're all
+familiar with it and I think you now
+have the background to go through uh all
+three of these papers now. Uh deep sea
+car 1, Kimmy 1.5 and uh Quent 3. Um any
+questions?
+Yes. So a question about why like
+operating is bad just to confirm like my
+understanding. I guess it's bad because
+like in those in either the very easy or
+the very hard cases we don't want to
+actually like aggressively update the
+model. Yeah. I think this gets into sort
+of um uh wishy-washy folk theorem
+territory, but actually some of these
+papers will talk about this folk theory
+and so I'll mention it which is what you
+really want the RL algorithm to do is to
+get problems that it can like do
+somewhat well on like it can get some
+reward on but is not so easy that it can
+like already solve them right so there's
+like kind of a curriculum effect where
+you want to feed the models the right
+you know level of difficulty and if
+you're maximizing the that standard
+deviation that's kind of the wrong
+direction Right? You're really maxing
+out the stuff at the extremes that you
+either already all know or are just way
+too hard for you to solve. Um,
+cool. Okay. So, we're going to talk
+about uh all three of these papers
+today. R1, uh, Kimmy K1.5, and Quen 3.
+Um, R1 and K1.5, I think, are pretty
+interesting because they came out at
+roughly the same time. Um, sadly, R1 was
+the only one to to get like a gigantic
+social uh, what's it called? Uh,
+reception. Um but both of these actually
+um show how to do RL based reasoning on
+like math and other things with LLMs,
+right? And they because they're
+contemporaneous um you can kind of see
+almost two parallel ways to tackle the
+same problem like which things are
+similar, which things are different and
+so on which is great. Um Quinn 3 is the
+newest of the releases. Um and they do
+some fairly interesting variations of
+ideas in R1. Um, and also they have some
+new kind of tricks that that R1 doesn't
+have, which I think are pretty
+interesting things to look at,
+especially if you're interested in
+things like inference efficiency, uh, of
+reasoning models.
+So, uh, I'll start with R1. Um, I think
+R1 is, you know, kind of amazing in the
+sense that it's a it's a, you know,
+archive paper that launched a whole
+social phenomenon. Never let your
+advisers tell you that, you know, your
+archive papers will never matter. you
+know, this one uh lost like what almost
+half a billion dollars of of Nvidia
+valuation. You two can one day maybe
+cause that kind of a wave. Um R1, I
+think, is quite remarkable because you
+know it in many ways replicates all of
+the qualitative properties of the 01
+recipe in a way that is extremely
+simple. Um so you know the the key
+properties that I want to talk through
+and and you know make sure you all
+understand. Um the first thing right is
+that you know it hits the performance
+targets that open AIO1 set. Everyone was
+really excited about reasoning model. So
+this is very exciting. The second thing
+is that you know it opens up a RL recipe
+that is not only just like a replicable
+one but I think more importantly one
+that is extremely simple right it
+doesn't have any search it doesn't have
+any process reward models. I think lots
+of people at the time thought maybe we
+need all these complicated pieces to get
+reasoning models. R1 really shows you
+don't need any of that, right? And then
+finally, um there's lots of interesting
+insights about the interaction between
+supervised fine-tuning um and RL that I
+think um continue to be really
+important. Okay, so uh the starting
+point of R1 is they build on deepseek
+math. Um, and actually some of the
+equations I showed you of GRPO are from
+Deepseek math where they originally
+proposed GRPO as an alternative simpler
+or system more systems efficient variant
+of PO, right? To them actually the most
+important piece was they wanted to get
+rid of the value model just because it's
+really annoying to have around. Um, but
+one thing that's really interesting is
+is you know they actually go for this
+yellow line the outcome supervision
+which is not actually the best
+performing model um in deepseek math.
+talk about that again at the very end of
+this this section here. So I'll walk
+through all the different pieces of R1.
+Um so I'll start with R10 uh which I
+think of as the controlled setting,
+right? So R10 um is a very pure form of
+RL learning. um it basically takes uh
+essentially the model that is
+pre-trained plus mid-trained um before
+doing any RLHF or instruction tuning and
+then throws it into the uh math RL loop
+and then they try to find out how well
+does that do right so the details here
+um how do they do the reinforcement
+learning well they have a bunch of uh
+sort of mathish tasks the data is not
+public um they take deepseeek v3 as
+their kind of base model um and then
+their rewards there's two forms of
+rewards that they use. One of them is an
+accuracy reward. So like did it get the
+math question correct? Right? It's a
+correct or not reward. It's binary. Uh
+they have a format reward that basically
+forces the model to put its coot within
+like thinking tags like thinking start
+thinking end of thinking tags, right?
+And that's important if you want your
+model to have these like long coots uh
+being used. Now, um the format reward
+feels like something that doesn't
+matter, but from many papers and from
+having talked to many people, apparently
+it is a pretty critical part of actually
+getting this whole like reasoning RL
+thing to work. Um once you do this
+right, all they're doing is is doing RL
+on top of the base model. Nothing very
+fancy, but the results are are pretty
+striking. they get performance that is
+getting pretty close to open AIO1 by
+just doing some RL um on top of of the
+model that they already had, right? Um
+without any like, you know, coot
+fine-tuning or anything like this. Um
+and there's kind of two things uh that
+they note in their paper as being really
+interesting about R10. Um and I want to
+talk about this because I think it's
+important to to carefully examine what
+is happening in R10. So the first thing
+they say is, "Oh, it's very cool that if
+you just let the model do RL on this
+this verifiable rewards, the length of
+the coot just kind of increases like
+pretty predictably." Um, and you know,
+in commentary that I don't know if I
+necessarily agree with, you know, in the
+paper they're like, "Oh, it's learning
+to solve harder and harder problems by
+thinking harder and harder." It's like,
+well, maybe. Um, they also, you know,
+point out it's kind of cool that, you
+know, they learn, you know, phenomena
+like backtracking. They call this the
+aha moment. I think much has been made
+uh about this in sort of public
+discourse that wow it's cool that RL
+training can give models these kind of
+emergent insights. Um I'll kind of refer
+you back to the the doctor gpo paper the
+one that was talking about the
+corrections to GRPO. Um and I think they
+have honestly pretty good and
+interesting arguments that both of these
+are not particularly interesting
+phenomena. Like first of all they argue
+that like the length just goes up
+because of the biased objective not
+because you know it's an inherently
+interesting object. Um and second they
+they argue well if you just run
+deepseeek v3 on a bunch of math
+questions it'll also sometimes output
+things like aha I can do this or that
+which is maybe not like a deeply new
+phenomenon that arises from RL. Um you
+know both of these seem like given more
+recent evidence kind of credible uh
+things that like maybe there's nothing
+like emergent and special about R10 but
+it is actually working very well right
+that is a good math model.
+So R10 you can think of as kind of a
+research setting, right? They're taking
+a controlled model, they're doing
+something very controlled on top of it,
+which is math RL, and they get a good
+model out, right? But if you're trying
+to build a really strong model that
+you're going to ship to the world, um
+this is not what you're going to do,
+right? You're going to like basically do
+everything that you can to get the best
+model that you can, right? So what would
+you do uh in that sort of more
+unrestricted setting? Well, um you're
+going to maybe insert some supervised
+fine-tuning. you're going to take, you
+know, coots from, you know, some
+undisclosed source and you're going to
+fine-tune your deepseeek model on that
+before you do your RL. And after you do
+that, right, you don't want your model
+to be kind of like this math savant that
+can't do anything else. So, you're going
+to, you know, apply your usual
+post-training pipeline on top of that to
+make sure that it can do all the other
+tasks that, you know, people normally
+want to use these models for, right? So,
+this is kind of the the the pipeline
+differences. Um, and so the key
+differences both within the pipeline and
+uh within the RL is they do SFT
+initialization to try to get the model
+to to know how to do long coots without
+starting with RL. They add a language
+language consistency reward in order to
+make sure that the chains of thought
+remain in a single language and then
+they do you know a secondary RLHF stage
+um kind of at the end. So I think this
+makes a lot of sense, right? Every time
+you want to do something advanced like
+reinforcement learning, um you're
+probably going to start by doing a
+little bit of supervised fine-tuning. Um
+and so even in sort of reasoning models
+or long coot models like deepcar1, this
+is the case, right? You start with uh
+long coot supervised fine-tuning data
+and then you're going to, you know, do
+RL. Um I will point out that the uh
+description of where they get this data
+and what this data is remains very very
+vague. like they don't tell us like what
+was the coot data derived from um how
+did they filter it I don't really have
+any idea based on reading the R1 paper
+um the claimed benefit of this is that
+if you coot the model on sorry if you
+sft the model on long let's say English
+coots then this gives you an
+interpretability benefit right as you do
+RL you're not going to get like weird
+gibberish it's going to kind of keep the
+model closer to these like more
+interpretable coots that you started out
+with um So and and that would be kind of
+good for users, right? Like as you're,
+you know, using a math model, it would
+be nice to see its reasoning uh as it
+goes. Um and an additional thing, right?
+So so when they do SFT initialization,
+they use a ton of data. But one really
+interesting thing is that for a lot of
+models, even a tiny amount of uh SFT on
+these kinds of like long coot data can
+be good. Um, one thing that some of my
+students in collaboration with Percy,
+uh, we did was, um, basically take a
+bunch of long coots from Gemini 2.0
+flash thinking and, you know, fine-tune
+Quen 2.5. And maybe surprisingly, you
+know, with just a thousand examples, you
+know, you get really, really high, you
+know, uh, math benchmark accuracy, um,
+with just a little bit of long coot
+fine-tuning. So I think both of these
+are really pointing to the fact that the
+base model already has a lot of kind of
+like thinking capabilities that you're
+just like kind of priming and extracting
+um from the model. Um and after that of
+course you're going to do um RL, right?
+So after you've gotten the the model set
+up with SFT, you know, as with kind of
+the instruction tuning and RHF pipeline,
+so you start with SFT and then you do RL
+to to basically get the model to to
+actually optimize the rewards you're
+looking for. Um, the RL part is
+basically the same as R10. Not not huge
+differences, but with a a minor
+difference that you're going to add a
+language consistency loss. And they have
+I think I think this note is is pretty
+interesting. This is a minor note, but
+I'll describe it anyway where they
+basically say um, you know, they add
+this like language consistency reward
+because, you know, during the training
+process, if they just let the model RL,
+they find that actually the coot will
+will language mix like it will switch
+between languages. Um, and if many of
+you have kind of seen people playing
+with um, reasoning models, um, I've seen
+people on the internet post things like,
+oh, it's kind of weird that like Grock 3
+like suddenly switches to Chinese and
+the coot. And this is kind of consistent
+with those kinds of things that if you
+aggressively RL a model, like actually,
+you know, there's natural tendencies for
+models to language mix um, rather than
+staying in a single language. So it
+actually requires an additional reward
+to keep it in the single language.
+Um and then finally after you've done RL
+on like math and other verifiable
+domains you basically layer on the usual
+post training. So you do uh instruction
+tuning and then you do sort of the the
+pair wise preference tuning um
+afterwards right so uh they do an SFT
+spe where they combine both reasoning
+data um on non-verifiable tasks like
+write a proof of something um these are
+not verifiable and then so they use
+their own model as a judge for whether
+or not they got the answer correct. um
+they have non-reasoning data like sort
+of you know write a nice essay um and
+they use the same SFT data set as what
+they used for uh Deepseek V3 and then
+finally for RLHF they actually still use
+GRPO for RLHF which is kind of cool they
+use the same RL algorithm for everything
+um and then they um basically just
+follow the V3 RLHF pipeline like there's
+not really anything different for this
+post-training part right um how well
+does it work um works very very well I
+think Many of you probably experienced
+this as well, right? Like R1 was in many
+ways a shock because it matched the O1
+performance, you know, really kind of
+across the board on a very simple
+recipe, right? Like as I describe this,
+I don't think any of you found any of it
+particularly surprising. Um, but the the
+uh outcomes kind of speak for
+themselves. You know, you've got sort of
+on the English tasks basically, you
+know, tied or matching uh 01 on across
+the board. really slightly worse on code
+models but very very close really across
+all these different um tasks. The final
+thing that uh the R1 paper showed is
+that you can take these big big models
+and you can distill them into other
+models. So you can take your big deepsee
+R1 and you can take those chains of
+thought like in their case they take
+almost a million chains of thought and
+then they fine-tune Quen with those
+chains of thought and they actually get
+big boosts in sort of math performance
+relative to the base model which is only
+getting something like 50% uh
+performance on on Amy for for the 32B
+model. So they get 25 plus% boost on
+this task which is which is pretty
+surprising.
+Cool. And then uh finally um there's two
+I think interesting and good
+observations from R1 and I think
+scientifically maybe this was the the
+biggest contribution of R1 in a way. So
+I think R1 maybe had three contributions
+scientifically, right? One of it was it
+showed that outcome based rewards with
+GRPO works, right? It's like the
+positive proof and then R1 also had two
+other kind of like negative results kind
+of uh contributions and they are sort of
+contained in the very last part of the
+R1 report and they basically say okay
+like we tried two things uh like pretty
+extensively. We tried PRM and we also
+tried MCTS. Um, and neither of those
+really helped us at all on like
+replicating something like 01, right?
+And so to to get into a little bit of
+detail, right, PRM are basically uh
+process reward models. Those are kind of
+like uh systems that can give you
+intermediate rewards on a proof, right?
+So when your model is giving a chain of
+thought, a PRM would be able to say,
+"Oh, you went wrong at this step in the
+middle, right?" And obviously that is
+much richer and very powerful form of
+feedback. an RL algorithm can make
+really really good use of a PRM. But
+unfortunately, it's also very difficult
+to get a PRM in the first place. And so,
+you know, R1 um and the Deepseek math
+people like they had gone down this road
+of doing uh PRM for a while and they
+kind of concluded this doesn't work
+quite as well as outcome based rewards.
+And thus far, I think outcomebased
+rewards remain the way that in which you
+would build these models. The second
+thing that I think hasn't uh really
+panned out is searchbased methods. I
+think lots of people were interested in
+in search based approaches to reasoning.
+Thus far at least it hasn't really
+panned out in the same way that RL and
+outcome based rewards um has that that
+remains I think kind of the strongest uh
+kind of baseline and system um in this
+this universe. Okay. So any questions
+about um R1 like kind of their setup or
+any of the other findings? Yes.
+PRM GRPO and PRM are kind of two
+different
+Oh yes. Oh yeah. Yeah. That's right.
+Yes. Okay. Good. Sorry. I said I was
+going to mention it, but I didn't. So
+that is totally on me. That's right.
+Exactly. Um and so I think especially
+for the the PRM, I think it's really
+interesting and telling that in DeepSeek
+math, you know, they were very much
+convinced by sort of the strength of the
+PRM, which is this blue line with PS.
+And then in R1, they, you know,
+concluded that actually this approach
+that had worked for Deepseek math was
+not really going to work for R1. and
+they had gone with outcome based uh
+rewards. Yeah, thank you for reminding
+me. Um I was about to to forget my
+promise there. Uh yes
+consistency is that for I guess ease of
+understanding or is do they actually
+know how it protects performance? Yeah.
+So so um yeah in this note here they
+basically say um if you ablate away the
+the language uh consistency experiment
+it results in degradation of the model's
+performance. Um, but they're gonna put
+it in anyway because they prefer to have
+coots that are more readable to humans.
+Um, it's an interesting trade-off. Um,
+there have been lots of research about
+whether coots are faithful and they're
+not truly faithful. We kind of know
+that. Um, but maybe it's better to have
+a slightly more faithful coot than to
+have the extra, I don't know, half
+percentage point performance on Amy.
+Uh, yes.
+translated out the end, but if you if
+what you care about is that someone can
+read it, like
+so uh I mean I'm sure they can do like
+translations or or other kinds of like
+post-processing to make the coots
+better. And in some ways you might think
+of uh OpenAI and and these other vendors
+efforts to like summarize the coots as
+being very similar, right? Like because
+the raw coots are probably much messier
+and then they probably like sort of
+rationalize it away. Um that is one way
+and I think that is an effective way to
+to get interpretability. Um but I do
+think if you're interested in somehow if
+you aesthetically believe that the raw
+coot is very important for monitoring
+and and you know closer interpretability
+then I do think you do want something
+like this. Right.
+Cool. Okay. Um so now we're going to
+move on to uh Kimmy K1.5. Um and why do
+we study this one? Um, if you look at
+the timestamps for when R1 and K1.5 were
+released, it's it's kind of, you know,
+contemporaneous. Um, and it achieves
+very similar results. It does so using
+outcome based rewards in RL. It doesn't
+use the same algorithm. It has kind of
+different details and different
+interesting insights. And so we can
+learn about kind of what's the same,
+what's different, and maybe, you know,
+what parts are maybe important in this
+process. Um so to you know just show you
+the headline result before we start just
+to to get you to to believe that this is
+a paper that's you know worth being
+discussed here right um Kim K 1.5 is the
+the dark blue bars here um you can see
+openai's 01 as the the next highest bar
+so they're you know beating or matching
+01 across the board on a bunch of
+important tasks and they do basically uh
+things similar to R1. So they do SFT,
+they do RL, they have a different RL
+algorithm, but they do RL. Um they also
+describe their data set construction in
+a little bit more detail. And this
+actually gets used in in Quinn 3 later,
+so it's worth uh discussing. So let me
+talk through data. Um as Percy said
+earlier, maybe data is the most
+important thing in your whole pipeline.
+And so we should always pay attention
+when people talk about their kind of
+data curation, you know, strategies in
+like a large scale training paper. Um
+and so Kimmy 1.5 does several things to
+try to curate their data set. So what
+they first do is they try to balance
+across different domains like they have
+an automated I'm guessing um LM based
+tagging system to categorize um
+basically math questions by different
+domains and disciplines and then they
+kind of balance across these to try to
+get diversity across different domains.
+um they exclude even though these are
+verifiable multiple choice and true
+false questions because they argue that
+these are too easy to to hack or to
+randomly guess. So they're only looking
+for verifiable answers that are kind of
+short and can be evaluated by things
+like regex um or or LM. Um and this is
+maybe the most interesting piece of the
+curation here. Um what they do is they
+take the model uh that doesn't do any
+reasoning uh you know their SFT model um
+and they have this model generate uh 10
+answers um and the pass rate is used um
+in order to determine whether to include
+that example uh or not. Um and I I think
+the the exact thing they use for their
+latest selection strategy is they only
+select examples that fail best of eight.
+So if it if if they can get any one out
+of a correct, then it's excluded for
+being too easy. Um SFT data similar to
+to R1, very little description. Who
+knows where they got that from? Um they
+just say they do some prompt
+engineering. So clearly it was distilled
+from something else. Uh but we don't
+really know what they distilled off of.
+Um so I'll talk about the RL algorithm.
+The Kimmy one's kind of interesting. Um
+it's a different variation. It's
+actually maybe closer to DPO in a way.
+um but you end up with a you know
+algorithm that I think you'll very much
+recognize. So you can kind of think of
+this in a very interesting way as
+convergent evolution of of RL
+algorithms. So you start once again at
+the very top. This is our you know
+classic goal. You know we're sampling
+from a data set. We're sampling from our
+policy. We want to maximize rewards. We
+don't want to be too far from our base
+policy. So this is the KL regularizer.
+Um you know if you remember our DPO
+derivation you make a nonparametric
+assumption you say pi star is the
+optimal policy is an arbitrary function
+that means that the reward can be
+written as you know the log normalizer
+plus the ratio of policies right this is
+the exact same thing we did in dpo and
+now you know in dpo what we did was we
+took these rewards and we plugged them
+into the kind of the Bradley Terry
+preference function we don't have this
+here right we we're not doing pair wise
+preferences so we don't actually take
+that step. Instead, we write down this
+equation and we say we know that for the
+optimal policy, we're going to have
+equality here. And so, all we're going
+to do is we're going to make this a
+difference and we're going to add a
+squared loss on top, right? We're going
+to try to drive the left and the right
+sides close by just adding a squared
+loss. It's a reasonable thing to do.
+People have done things like this
+before. Um, and this gives us our loss.
+It's basically trying to drive uh the
+right side and the left side of
+something that should be an equality for
+the optimal policy close together. And
+well, this is a little bit of an exotic
+looking object or maybe exotic looking
+initially, but if you take the gradient,
+it just looks a lot like gRPO. Uh you
+know, you've got your gradients of your
+policy, right? This is your policy
+gradient stuff. Um and you've got a
+baseline reward. And actually, what's
+the baseline reward? I'm just going to
+average um the R within my batch, right?
+Um so here this is actually doing
+something different. This is the
+normalizing constant um I think over the
+batch. Um but you know we're doing
+essentially similar kinds of baselining
+as GRPO and we've got a slightly
+different like square of the the log
+loss regularization to keep my policy
+close rather than doing clipping. Right?
+So zooming out, what what's happening
+here? Very similar to GRPO in that this
+first part is a baseline loss, but
+there's no standard deviation thing
+happening. This second part is analogous
+to the clipping that happens in GRPO,
+but instead of doing clipping, we're
+explicitly regularizing the policy,
+right? So we've got the same ingredients
+just in slightly different form. Um, and
+so hopefully you can see, you know, that
+as long as you kind of have this policy
+gradient thing and the right baselining
+and something that looks like
+regularization, you can get a working RL
+algorithm.
+The other thing that the Kimmy folks do,
+and in some ways I think this is um more
+forward-looking or or they got this more
+right than the R1 folks, which is that
+they realize that, you know, if you're
+shipping a reasoning model, what you
+really care about is inference cost. And
+if you care about inference cost, you
+had better try to control the length of
+your uh coots, right? If you have really
+long thinking chains, that's going to
+cost you a ton of money or cost your
+users a ton of money. And so instead of
+celebrating the really long coots, the
+Kimmy folks say, uh, we want to really
+compress the coots as much as possible
+while keeping performance high. Um, and
+so they have this length reward thing
+here. Um, where what they're doing is
+for kind of each batch, um, they're
+looking at the maximum and the minimum
+lengths. And what you have is lambda
+where lambda is roughly like, you know,
+where are you in the range of lengths
+within your batch, right? So if you're
+at plus.5
+um you know you're really short and
+negative.5 uh you are really long right
+um and the reward is basically going to
+be lambda whenever you get the answer to
+be correct. So if your answer is correct
+you're going to incentivize yourself to
+be really short at the very shortest end
+of this range. Whereas if your answers
+are incorrect, you're in this bottom
+part of this length reward, which means
+that you're incentivizing the uh coot
+lengths to be roughly shorter than the
+center of the range of the rollouts.
+This is a somewhat funky loss to me to
+be honest, but you can kind of
+understand the dynamics of this loss,
+which is you're incentivizing um sort of
+correct answers to be as short as
+possible and incorrect answers are
+incentivized to be kind of averageish,
+right? Um, and so you don't have as
+strong of an optimization pressure to to
+push down incorrect answers uh to be
+short. And one final note on this length
+stuff is the Kimmy folks realize that if
+you add this re uh reward early on in
+training, it stalls RL because, you
+know, it basically forces the model to
+say I'm in a local minimum. I don't get
+any of my answers correct. The best I
+can do is to have my coots really short
+and then you just can't get out of that
+sort of local minimum. And so they
+actually only turn this on later on uh
+during training. So they kind of
+initially do a bit of unconstrained RL
+and then they add this length reward in
+um afterwards.
+Um and they also have additional cool
+details. Who knows how much of this
+stuff is necessary or important, but
+they actually have a whole curriculum
+set up. They basically have assigned
+difficulty labels. So the data set uh
+just kind of like top down like they
+just manually uh or via LMS kind of
+annotate uh the difficulty labels. Um,
+and then they go from easy to hard in
+that order. And then they also as
+they're uh going on sample problems
+proportional to one minus success rate.
+So if you're 100% succeeding, you just
+never sample that question uh ever
+again. Um, and for the rewards, they
+basically um for code they take problems
+with ground truth solutions and they
+generate a bunch of test cases. Um and
+for math they uh basically use actually
+a reward model um where that's used to
+compare like ground truth human written
+answers to the LM output. So instead of
+using something like a reg x or using um
+simply which is what other people have
+done the Kimmy folks actually use a
+model to do equivalence checking. It's
+kind of surprising to do this in a
+verifiable reward case but you know they
+don't seem to have a problem. the reward
+models are very very accurate um because
+it's really all it's doing is advanced
+string matching.
+Um one of the things uh that's really
+cool about the Kimmy paper um is that
+they also talk about kind of the infra
+issues that arise uh doing RL I think I
+don't think I've seen any of the other
+um RL reasoning papers actually talk
+about systems almost at all. So, it's
+nice to see that they're kind of talking
+about this, what their structure is,
+what their their uh layout of this is.
+Um, you'll have to deal with this in A5,
+like I think a very mini version of this
+as you implement um things like rollouts
+in RL. But one thing I'll note, right,
+is you know, why is RL so hard to make
+efficient? And in many ways, it's harder
+than normal pre-training to to have your
+GPUs like fully utilized during RL. Um,
+and the reason I think is because
+there's rollouts involved, right? So you
+have to be generating sequences and
+whenever you're generating sequences not
+only are you kind of you know slow in
+the sense of inference is slow but also
+you have this other issue which is that
+um you have to switch from RL to
+inference and back and you have to be
+passing sort of data back to the RL
+worker and the RL worker has to pass
+model weights to the inference server
+and vice versa. So you've got all this
+sort of message passing um that can
+happen. And finally um this is unique to
+long coot models, but if you have really
+long coots, batches can become very very
+uneven. So you have to to handle that
+cleverly um somehow. And so um the Kimmy
+folks do this, you know, relatively nice
+but fairly standard thing of having
+different workers that are assigned to
+do the RL updates, having different
+workers assigned to do inference. Um and
+they have basically kind of message
+passing to be able to pass the weights
+to the inference worker and the
+inference worker can basically make data
+sets for the RL worker. Um and you know
+they have almost the same kinds of
+setups that you will have. Um they use
+VLM for inference. Um and they also do
+very you know advanced stuff where they
+have to have VLM with dummy weights and
+they have to kill it because of the the
+complexities of doing kind of this
+passing of weights from one worker um to
+another.
+Um, finally, I think one thing that I
+think is is interesting um that the
+Kimmy people show in in their results is
+they they have like per iteration
+results where they show like as RL
+proceeds like how does you know
+performance scale and they show really
+nice scaling which is in the blue and
+they also show the growth of the length
+of the responses and much like in Dr.
+GRPO because I don't think their their
+RL algorithm is inherently sort of
+balanced or sorry biased towards longer
+responses. Most of the um uh sort of
+responses actually sort of plateau out
+at a sort of target length like we saw
+with Dr. GRPO rather than grow
+unboundedly like we did with uh the
+vanilla grpo.
+Cool. Um any questions on on Kimmy
+before we finally conclude with uh Quen
+3?
+So back to like the RL setup in detail
+of Kimmy. Um yeah I was wondering like
+so I guess like when you're like doing
+the robots during like training like the
+robots the inference is done by the app
+right? Yes. And as I update the
+parameter that will mean that like you
+know as they update the model they also
+need to sync that to the um to the VM
+inference through worker and that's what
+this is for. Yeah. So I think you know
+the most annoying part at least with
+current um libraries of this process is
+essentially that step of taking RL
+weights and putting it into VL1. Uh
+there is an experimental API that is
+supposed to allow you to use uh NCCL
+collective calls to uh shove a set of
+weights into VLM. Um but at least we
+were thinking about having you use that
+for the assignment actually. Uh but it
+has too many undocumented parameters for
+it to be a little bit mature. Um and so
+maybe next year's iteration this will
+actually be you know fairly mature
+technology. But right now I think a lot
+of people do things like start a VLM
+with dummy weights. The weights then get
+loaded somehow into memory with sort of
+hacks on top of VL1.
+And each iteration they often tear down
+VLM to make sure they can free the GPU
+memory fully.
+Yeah, there there's a lot of like I
+think you know the RL for LMS I think is
+is fairly new still. So I think the
+infrastructural support remains a little
+bit immature but I think in maybe a year
+things will actually just get much
+nicer. Yeah, question back there. You
+have a lot of like accuracy rewards and
+like rewards rewards. How are you
+supposed to combine them together? Yeah.
+Um so you how do you combine the
+different rewards? Um I think this is
+one of the RL not quite black magic but
+really you know like RL magic things of
+like you just tune weights like in all
+cases um all the rewards are just added
+together but with weights and how are
+the weights determined empirically in
+order to maximize the downstream
+performance right um especially for
+things like format rewards you can
+almost think of them as like shaping or
+like surrogate rewards like you don't
+necessarily really care about the
+formatting reward it's more of a means
+to an end to get a good long coot within
+the tags that will get you the answer
+Cool.
+Okay, so the final uh one I want to talk
+about is Quen 3. And thankfully uh Quen
+3 released their report before the end
+of the class, so I get to include it.
+Um, and you know, I think this is the
+most recent and modern of the um, RL uh,
+for reasoning kind of models to have
+come out. And so we can kind of see how
+they've like built upon the previous
+works like where they've changed things.
+Um, and they have actually pretty
+interesting scaling and data results
+that are are are new and unique.
+Um, so the overall picture is very
+similar to what um, R1 and Kimmy have
+done, right? So Quinn basically take
+their base models. um they'll do a long
+coot sft stage. So that's this first
+stage over here. They'll do their
+reasoning RL. Um they'll do something
+funky that I'll I'll talk about later
+called thinking mode fusion. Um and then
+they'll do um RLHF RL and then that's
+the model that they ship. Of course they
+they then distill that in various ways,
+but we can kind of forget about that um
+for the moment, right? Um so we've
+already seen this in R1, right? RLHF
+comes after reasoning um and then
+distillation comes yet after uh that.
+And we already know a lot of the
+playbook. So I can actually go through
+this fairly fast. Um much like Kimmy,
+they basically curate the data by
+filtering for difficulty using best of
+end. So if your base model that hasn't
+been RL can already answer it, if you
+sample like end times, then you can just
+get rid of it, right? Um you they also
+do some like decontamination things
+where they remove things that are too
+similar to validation data. Um and then
+they also manually filter um essentially
+their SFT set. So like for their initial
+SFT data uh for long coots they like
+manually filter it for whether they are
+guessing or whether they actually got it
+right. Um the one thing that empirically
+I think is really interesting about the
+Quen 3 uh RL results is that they are
+actually doing this RL only on 3,995
+examples um you know which is a very
+small number of examples to be doing
+this on um and they get pretty good
+gains out of the RL process. And so you
+can view this as you know um RL on
+verified rewards as being very
+efficient. You could also think of this
+as being um analogous to many sample
+efficiency results in the past like
+people have shown that you can uh
+instruction tune a model with very few
+samples or that you can distill a long
+coot with very few samples but that
+doesn't necessarily mean that it doesn't
+continue to scale right we don't really
+know why. What this does show is that
+even with very few examples, you can
+sometimes do RL which is surprising and
+cool. Um so what is the two new uh sort
+of quen specific stuff that they do? um
+the the thing that they do is uh this
+thing called thinking mode fusion which
+I think is kind of interesting and where
+I think the the field or the the various
+trends are going is in controlling
+inference right so what they do is they
+want to have both a thinking model and a
+non-thinking model in the same you know
+single set of parameters so what do they
+do well you know after they train a
+model with RL um they have a model that
+can do thinking and now they're going to
+fine-tune it again to do one of two
+things they're going to fine-tune the
+model with some data that has a think
+tag and then it's going to do the normal
+coot thing and you can get this data
+from yourself right like the original
+thinking model can generate this um or
+you can have a no think tag in which
+case it should immediately kind of emit
+an answer um and you know in this case
+they they're going to have to sort of
+supervise fine-tune the model to know
+what no think means and to immediately
+try to emit um the answer um and one
+kind of interesting um side effect of
+this is that they found that if they do
+this training where they train the model
+to to have a think and a no think tag.
+Then what they can do is they can sort
+of if the model continues to think and
+you want to terminate the thinking
+process, you can kind of actually like
+terminate the thinking process, add a
+special string that's like considering
+the limited time of the user, I have to
+give a solution by thinking directly now
+and then end think tag and then it sort
+of accurately gives the answer. So this
+gives them a control knob by which they
+can sort of more precisely control a
+maximum number of thinking tokens. Um
+and this gives them pretty clean test
+time scaling from a single model. And so
+they can set like a maximum thinking
+budget. Um and of course the sort of you
+know very very maximum out to infinity
+is just the the original thinking model
+but they can kind of early terminate to
+the left and they can get graceful
+degradations uh in model performance.
+That's you know not too bad at the very
+sort of beginning. You can like have the
+the thinking tokens and still get some
+pretty good uh performance.
+And so you know you can look at um Quen
+3 also does a nice ablation where they
+give you the performance at the
+reasoning RL stage at the thinking mode
+fusion stage and at the general RL
+stage. Um and one thing that's very
+interesting to me here is that if you
+look at the first two sets of rows the
+general task and the instruction
+following ones um reasoning RL helps
+thinking mode fusion helps and of course
+RLHF continues to help here as well
+right like kind of everything helps um
+in this regime but if you look at kind
+of math or stem performance you know in
+the thinking case general RL hurts
+performance and in the non-thinking case
+it helps performance so there really is
+seems to be at least somewhat of a
+trade-off in, you know, do I optimize
+for general purpose instruction
+following up here or do I optimize for
+like math encoding kind of down here,
+right? Um, and so those are kind of
+interesting sort of properties that are
+emerging and it'll be cool to see sort
+of uh more future models kind of
+sidestep these uh tradeoffs um somehow.
+Okay, cool. So to put that all together
+um our our sort of initial motivation
+was to say RL is very powerful. We kind
+of figured out that we can do RL with
+language models in the RLHF domain. But
+you can't just like hill climb on noisy
+pair wise preferences forever, right? Um
+so one solution is to pick domains in
+which you can't do reward hacking and
+then just you know go for it, right? RL
+and narrow domains is one good solution.
+Um and GRPO is one very simple algorithm
+and hopefully you all kind of have a
+sense of like okay I can just do policy
+gradients with some good baselines and
+that will enable uh RL on all of these
+kinds of verifiable reward domains. Um
+and then finally um there's lots of
+successful recipes in the wild and you
+hopefully now you've seen you know
+what's in common, what's different, what
+what implementation tricks uh matter.
+Cool. Thanks a lot. Um and I will see
+you all next week.
